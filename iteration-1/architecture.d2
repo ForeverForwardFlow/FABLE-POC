@@ -1,0 +1,459 @@
+direction: down
+
+title: {
+  label: FABLE — Forwardflow AI Business Logic Engine
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    font-color: "#1a1a2e"
+  }
+}
+
+subtitle: {
+  label: AI-First Business Automation Platform
+  near: top-center
+  shape: text
+  style: {
+    font-size: 16
+    italic: true
+    font-color: "#555"
+  }
+}
+
+# ─── User Layer ───────────────────────────────────────────
+
+users: {
+  label: End Users (Non-Technical)
+  shape: person
+  style: {
+    fill: "#e8f4f8"
+    stroke: "#2196F3"
+    font-color: "#1a1a2e"
+  }
+}
+
+# ─── Frontend ─────────────────────────────────────────────
+
+fe: {
+  label: FABLE Chat FE
+  shape: rectangle
+  style: {
+    fill: "#e3f2fd"
+    stroke: "#1565C0"
+    border-radius: 8
+    font-color: "#1a1a2e"
+    bold: true
+  }
+}
+
+# ─── Backend (Cloudflare) ────────────────────────────────
+
+cloudflare: {
+  label: Cloudflare Platform
+  style: {
+    fill: "#fff3e0"
+    stroke: "#F57C00"
+    border-radius: 12
+    font-color: "#1a1a2e"
+  }
+
+  be: {
+    label: FABLE BE\n(Workers)
+    shape: rectangle
+    style: {
+      fill: "#ffe0b2"
+      stroke: "#E65100"
+      border-radius: 8
+      bold: true
+    }
+  }
+
+  triggers: {
+    label: Triggers\n(Cron / Webhooks)
+    shape: rectangle
+    style: {
+      fill: "#ffe0b2"
+      stroke: "#E65100"
+      border-radius: 8
+    }
+  }
+
+  queues: {
+    label: Cloudflare Queues\n(At-Least-Once Delivery)
+    shape: queue
+    style: {
+      fill: "#ffe0b2"
+      stroke: "#E65100"
+      border-radius: 8
+    }
+  }
+
+  deployments: {
+    label: Cloudflare Deployments
+    shape: rectangle
+    style: {
+      fill: "#ffe0b2"
+      stroke: "#E65100"
+      border-radius: 8
+    }
+  }
+
+  mcp_servers: {
+    label: MCP Servers\n(Tenant-Deployed)\n— Scope Enforcement —
+    shape: rectangle
+    style: {
+      fill: "#fff9c4"
+      stroke: "#F9A825"
+      border-radius: 8
+    }
+  }
+
+  dbs: {
+    label: ""
+    style: {
+      fill: "#ffe0b2"
+      stroke: "#E65100"
+      border-radius: 8
+    }
+
+    prompt_store: {
+      label: System Prompt Store\n(Workflows)
+      shape: cylinder
+      style: {
+        fill: "#fff9c4"
+        stroke: "#F9A825"
+      }
+    }
+
+    db_layer: {
+      label: Abstracted DB Layer\n(Users, Tenants, Roles,\nScope Rules, Sessions)
+      shape: cylinder
+      style: {
+        fill: "#fff9c4"
+        stroke: "#F9A825"
+      }
+    }
+
+    event_log: {
+      label: Event Log\n(Append-Only)\n— Version History —\n— Audit Trail —
+      shape: cylinder
+      style: {
+        fill: "#fff9c4"
+        stroke: "#F9A825"
+      }
+    }
+
+    cred_vault: {
+      label: Credential Vault\n(API Keys, OAuth Tokens)
+      shape: cylinder
+      style: {
+        fill: "#ffcdd2"
+        stroke: "#C62828"
+      }
+    }
+  }
+}
+
+# ─── AI Engine (AWS) ─────────────────────────────────────
+
+aws: {
+  label: AWS — AI Engine
+  style: {
+    fill: "#e8eaf6"
+    stroke: "#283593"
+    border-radius: 12
+    font-color: "#1a1a2e"
+  }
+
+  orchestrator: {
+    label: FABLE Orchestrator\n(Claude Agent SDK + Bedrock)
+    shape: rectangle
+    style: {
+      fill: "#c5cae9"
+      stroke: "#1A237E"
+      border-radius: 8
+      bold: true
+      font-size: 16
+    }
+  }
+
+  phases: {
+    label: ""
+    style: {
+      fill: "#c5cae9"
+      stroke: "#3949AB"
+      border-radius: 8
+    }
+
+    req: {
+      label: Requirements\nGathering
+      shape: rectangle
+      style: {
+        fill: "#9fa8da"
+        stroke: "#283593"
+        border-radius: 6
+      }
+    }
+
+    plan: {
+      label: Deep Planning\n(Extended Thinking)
+      shape: rectangle
+      style: {
+        fill: "#9fa8da"
+        stroke: "#283593"
+        border-radius: 6
+      }
+    }
+
+    build: {
+      label: Build & Deploy\n(Workers)
+      shape: rectangle
+      style: {
+        fill: "#9fa8da"
+        stroke: "#283593"
+        border-radius: 6
+      }
+    }
+
+    req -> plan -> build
+  }
+
+  workers: {
+    label: Claude Code Workers (Containers)
+    style: {
+      fill: "#c5cae9"
+      stroke: "#3949AB"
+      border-radius: 8
+    }
+
+    w1: {
+      label: Worker A\n(Git Worktree)
+      shape: rectangle
+      style: {
+        fill: "#9fa8da"
+        stroke: "#283593"
+        border-radius: 6
+      }
+    }
+
+    w2: {
+      label: Worker B\n(Git Worktree)
+      shape: rectangle
+      style: {
+        fill: "#9fa8da"
+        stroke: "#283593"
+        border-radius: 6
+      }
+    }
+
+    w3: {
+      label: Worker C\n(Git Worktree)
+      shape: rectangle
+      style: {
+        fill: "#9fa8da"
+        stroke: "#283593"
+        border-radius: 6
+      }
+    }
+  }
+
+  prompts: {
+    label: Development Prompts\n& Guidelines\n(CLAUDE.md / Skills / Hooks)
+    shape: document
+    style: {
+      fill: "#dcedc8"
+      stroke: "#33691E"
+      border-radius: 8
+    }
+  }
+
+  orchestrator -> phases
+  orchestrator -> workers
+  prompts -> orchestrator
+  prompts -> workers
+}
+
+# ─── CI/CD ───────────────────────────────────────────────
+
+github: {
+  label: GitHub CI/CD
+  shape: rectangle
+  style: {
+    fill: "#f3e5f5"
+    stroke: "#6A1B9A"
+    border-radius: 8
+    bold: true
+  }
+}
+
+# ─── Industry Packs ──────────────────────────────────────
+
+packs: {
+  label: Industry Vertical Packs
+  style: {
+    fill: "#e0f2f1"
+    stroke: "#00695C"
+    border-radius: 12
+  }
+
+  frost: {
+    label: FROST\nInsurance
+    shape: rectangle
+    style: { fill: "#b2dfdb"; stroke: "#00695C"; border-radius: 6 }
+  }
+
+  flora: {
+    label: FLORA\nHealthcare
+    shape: rectangle
+    style: { fill: "#b2dfdb"; stroke: "#00695C"; border-radius: 6 }
+  }
+
+  fleet: {
+    label: FLEET\nLogistics
+    shape: rectangle
+    style: { fill: "#b2dfdb"; stroke: "#00695C"; border-radius: 6 }
+  }
+
+  flair: {
+    label: FLAIR\nLegal
+    shape: rectangle
+    style: { fill: "#b2dfdb"; stroke: "#00695C"; border-radius: 6 }
+  }
+
+  forte: {
+    label: FORTE\nHR
+    shape: rectangle
+    style: { fill: "#b2dfdb"; stroke: "#00695C"; border-radius: 6 }
+  }
+
+  more: {
+    label: ...\n+ more
+    shape: rectangle
+    style: { fill: "#b2dfdb"; stroke: "#00695C"; border-radius: 6 }
+  }
+}
+
+# ─── Connections ─────────────────────────────────────────
+
+# User flow (chat path)
+users -> fe: Chat
+fe -> cloudflare.be: API
+
+# BE <-> AI Engine (the core runtime loop)
+cloudflare.be -> aws.orchestrator: User requests {
+  style: {
+    stroke: "#1A237E"
+    stroke-width: 3
+  }
+}
+
+aws.orchestrator -> cloudflare.be: Responses & actions {
+  style: {
+    stroke: "#1A237E"
+    stroke-width: 3
+  }
+}
+
+# Trigger path (scheduled + webhooks)
+cloudflare.triggers -> cloudflare.queues: Fire-and-forget {
+  style: {
+    stroke: "#E65100"
+    stroke-width: 2
+  }
+}
+
+cloudflare.queues -> aws.orchestrator: Queued prompts {
+  style: {
+    stroke: "#E65100"
+    stroke-width: 2
+  }
+}
+
+# Orchestrator uses stored prompts, MCP, data, and credentials
+aws.orchestrator -> cloudflare.dbs.prompt_store: Fetch/store workflow prompts {
+  style: { stroke-dash: 3 }
+}
+
+aws.orchestrator -> cloudflare.mcp_servers: Call MCP tools {
+  style: {
+    stroke: "#F9A825"
+    stroke-width: 2
+  }
+}
+
+aws.orchestrator -> cloudflare.dbs.cred_vault: Retrieve credentials {
+  style: { stroke-dash: 3 }
+}
+
+aws.orchestrator -> cloudflare.dbs.db_layer: Read/write data {
+  style: { stroke-dash: 3 }
+}
+
+aws.orchestrator -> cloudflare.dbs.event_log: Write events {
+  style: { stroke-dash: 3 }
+}
+
+# Workers build and deploy
+aws.workers -> github: Push code
+github -> cloudflare.deployments: Deploy {
+  style: {
+    stroke: "#6A1B9A"
+    stroke-width: 2
+  }
+}
+
+cloudflare.deployments -> cloudflare.mcp_servers: Deploy new MCP servers {
+  style: {
+    stroke: "#F57C00"
+    stroke-width: 2
+    stroke-dash: 5
+  }
+}
+
+# Industry packs feed into the system
+packs -> cloudflare.dbs.prompt_store: Pre-seeded prompts & workflows {
+  style: { stroke-dash: 3; stroke: "#00695C" }
+}
+packs -> cloudflare.mcp_servers: Pre-built MCP templates {
+  style: { stroke-dash: 3; stroke: "#00695C" }
+}
+
+# Self-extending loop annotation
+self_loop: {
+  label: |md
+    **The Self-Extending Loop**
+    1. User requests capability
+    2. Orchestrator plans it
+    3. Workers build MCP server
+    4. CI/CD deploys to Cloudflare
+    5. FABLE now has new tool
+    6. All workflows can use it
+  |
+  near: bottom-right
+  shape: text
+  style: {
+    font-size: 13
+    font-color: "#555"
+  }
+}
+
+# Runtime loop annotation
+runtime_loop: {
+  label: |md
+    **The Runtime Loop**
+    1. Trigger fires (cron/webhook/chat)
+    2. Queued to orchestrator
+    3. Orchestrator calls MCP tools
+    4. MCP enforces scope per user
+    5. Events logged (audit + undo)
+    6. Response returned to user
+  |
+  near: bottom-left
+  shape: text
+  style: {
+    font-size: 13
+    font-color: "#555"
+  }
+}

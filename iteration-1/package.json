@@ -1,0 +1,48 @@
+{
+  "name": "fable",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "FABLE - Forwardflow AI Business Logic Engine",
+  "workspaces": [
+    "packages/*",
+    "packages/mcp-servers/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "test": "turbo run test",
+    "test:watch": "turbo run test:watch",
+    "typecheck": "turbo run typecheck",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "eslint": "^9.18.0",
+    "eslint-config-prettier": "^10.0.1",
+    "globals": "^15.14.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.4.1",
+    "prettier": "^3.4.2",
+    "turbo": "^2.3.4",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.21.0"
+  },
+  "lint-staged": {
+    "*.{ts,js}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml}": [
+      "prettier --write"
+    ]
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "npm@10.8.1"
+}

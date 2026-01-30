@@ -1,0 +1,7 @@
+name = "mcp-greeting"
+main = "dist/worker.js"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Secrets (set via `wrangler secret put MCP_API_KEY`)
+# MCP_API_KEY is required for authentication

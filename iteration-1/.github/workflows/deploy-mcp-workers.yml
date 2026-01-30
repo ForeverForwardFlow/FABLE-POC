@@ -1,0 +1,53 @@
+name: Deploy MCP Workers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/mcp-servers/greeting/**'
+  workflow_dispatch:
+    inputs:
+      server:
+        description: 'MCP server to deploy (e.g., greeting)'
+        required: true
+        default: 'greeting'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build shared packages
+        run: npm run build --workspace=@fable/shared
+
+      - name: Build worker
+        working-directory: packages/mcp-servers/greeting
+        run: npm run build:worker
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: packages/mcp-servers/greeting
+          command: deploy
+
+      - name: Output deployment URL
+        run: |
+          echo "## Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "MCP Server deployed to: https://mcp-greeting.\${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.workers.dev/mcp" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. Set the API key secret: \`wrangler secret put MCP_API_KEY\`" >> $GITHUB_STEP_SUMMARY
+          echo "2. Test the endpoint with curl" >> $GITHUB_STEP_SUMMARY

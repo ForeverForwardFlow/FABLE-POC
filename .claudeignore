@@ -1,0 +1,9 @@
+# Archived iteration - reference only when explicitly requested
+iteration-1/
+
+# Node modules are never relevant
+node_modules/
+
+# Build artifacts
+dist/
+*.tsbuildinfo

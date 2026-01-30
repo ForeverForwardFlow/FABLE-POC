@@ -1,0 +1,45 @@
+{
+  "id": "exec-20260130-math-utils",
+  "request": "Build math-utils package with add and multiply tools",
+  "root_process": "core-a1b2",
+  "package_path": "packages/math-utils",
+
+  "started_at": "2026-01-30T10:00:00Z",
+  "completed_at": "2026-01-30T10:05:00Z",
+  "status": "completed",
+
+  "nodes": [
+    {"id": "core-a1b2", "type": "process", "role": "CORE", "status": "completed", "created_at": "2026-01-30T10:00:00Z", "created_by": "system"},
+    {"id": "oi-c3d4", "type": "process", "role": "OI", "status": "completed", "parent_id": "core-a1b2", "created_at": "2026-01-30T10:01:00Z", "created_by": "core-a1b2"},
+    {"id": "worker-add", "type": "process", "role": "WORKER", "status": "completed", "parent_id": "oi-c3d4", "created_at": "2026-01-30T10:02:00Z", "created_by": "oi-c3d4"},
+    {"id": "worker-multiply", "type": "process", "role": "WORKER", "status": "completed", "parent_id": "oi-c3d4", "created_at": "2026-01-30T10:02:00Z", "created_by": "oi-c3d4"},
+
+    {"id": "tool-add", "type": "tool", "name": "add", "description": "Adds two numbers", "input_schema": "z.object({ a: z.number(), b: z.number() })", "created_at": "2026-01-30T10:00:30Z", "created_by": "core-a1b2"},
+    {"id": "tool-multiply", "type": "tool", "name": "multiply", "description": "Multiplies two numbers", "input_schema": "z.object({ a: z.number(), b: z.number() })", "created_at": "2026-01-30T10:00:30Z", "created_by": "core-a1b2"},
+
+    {"id": "file-add", "type": "file", "path": "src/tools/add.ts", "category": "source", "created_at": "2026-01-30T10:03:00Z", "created_by": "worker-add"},
+    {"id": "file-add-test", "type": "file", "path": "__tests__/add.test.ts", "category": "test", "created_at": "2026-01-30T10:03:30Z", "created_by": "worker-add"},
+    {"id": "file-multiply", "type": "file", "path": "src/tools/multiply.ts", "category": "source", "created_at": "2026-01-30T10:03:00Z", "created_by": "worker-multiply"},
+    {"id": "file-multiply-test", "type": "file", "path": "__tests__/multiply.test.ts", "category": "test", "created_at": "2026-01-30T10:03:30Z", "created_by": "worker-multiply"}
+  ],
+
+  "edges": [
+    {"id": "e1", "from": "core-a1b2", "to": "oi-c3d4", "relation": "spawns", "created_at": "2026-01-30T10:01:00Z", "created_by": "core-a1b2"},
+    {"id": "e2", "from": "oi-c3d4", "to": "worker-add", "relation": "spawns", "created_at": "2026-01-30T10:02:00Z", "created_by": "oi-c3d4"},
+    {"id": "e3", "from": "oi-c3d4", "to": "worker-multiply", "relation": "spawns", "created_at": "2026-01-30T10:02:00Z", "created_by": "oi-c3d4"},
+
+    {"id": "e4", "from": "worker-add", "to": "file-add", "relation": "owns", "created_at": "2026-01-30T10:02:00Z", "created_by": "oi-c3d4"},
+    {"id": "e5", "from": "worker-add", "to": "file-add-test", "relation": "owns", "created_at": "2026-01-30T10:02:00Z", "created_by": "oi-c3d4"},
+    {"id": "e6", "from": "worker-multiply", "to": "file-multiply", "relation": "owns", "created_at": "2026-01-30T10:02:00Z", "created_by": "oi-c3d4"},
+    {"id": "e7", "from": "worker-multiply", "to": "file-multiply-test", "relation": "owns", "created_at": "2026-01-30T10:02:00Z", "created_by": "oi-c3d4"},
+
+    {"id": "e8", "from": "file-add", "to": "tool-add", "relation": "implements", "created_at": "2026-01-30T10:03:00Z", "created_by": "worker-add"},
+    {"id": "e9", "from": "file-multiply", "to": "tool-multiply", "relation": "implements", "created_at": "2026-01-30T10:03:00Z", "created_by": "worker-multiply"},
+
+    {"id": "e10", "from": "file-add-test", "to": "file-add", "relation": "tests", "created_at": "2026-01-30T10:03:30Z", "created_by": "worker-add"},
+    {"id": "e11", "from": "file-multiply-test", "to": "file-multiply", "relation": "tests", "created_at": "2026-01-30T10:03:30Z", "created_by": "worker-multiply"},
+
+    {"id": "e12", "from": "oi-c3d4", "to": "graph", "relation": "verified_by", "command": "npm run build", "status": "pass", "created_at": "2026-01-30T10:04:30Z", "created_by": "oi-c3d4"},
+    {"id": "e13", "from": "oi-c3d4", "to": "graph", "relation": "verified_by", "command": "npm run test", "status": "pass", "details": "12 tests passed", "created_at": "2026-01-30T10:04:45Z", "created_by": "oi-c3d4"}
+  ]
+}
