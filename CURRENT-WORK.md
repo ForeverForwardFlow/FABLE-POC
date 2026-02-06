@@ -1,7 +1,7 @@
 # FABLE Iteration 2 - Current Work
 
-**Last Updated:** 2026-01-30
-**Status:** Chaos Test Complete - Graceful Failure Handling Validated
+**Last Updated:** 2026-02-06
+**Status:** Memory Integration Complete (Phase 4)
 
 ---
 
@@ -13,6 +13,44 @@ We are developing FABLE Iteration 2 with the "CLAUDE.md as infrastructure" philo
 - Templates cascade: CORE → OI → Worker
 
 ## What We've Built So Far
+
+### 0. AWS Infrastructure (in `packages/infra/`)
+
+Full AWS deployment for the autonomous build pipeline:
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| VPC + Networking | ✅ Deployed | Public/private/isolated subnets |
+| ECS Cluster | ✅ Deployed | Fargate for build containers |
+| Step Functions | ✅ Working | CORE → OI pipeline |
+| Lambda Functions | ✅ Deployed | build-kickoff, get-task-output, chat, etc. |
+| Aurora Postgres | ✅ Deployed | Ready for memory system |
+| DynamoDB | ✅ Deployed | builds, connections, conversations tables |
+| S3 | ✅ Deployed | Build artifacts and outputs |
+| MCP Gateway | ✅ Working | Function URL for tool calls |
+
+**Key URLs:**
+- WebSocket: `wss://f9qynczzkj.execute-api.us-west-2.amazonaws.com/dev`
+- MCP Gateway: `https://zwbqvnkmw74c7h4ultiqx3ql6a0ccjci.lambda-url.us-west-2.on.aws/`
+
+**Documentation:** See `docs/aws-infrastructure.md` for complete resource inventory.
+
+### Build Pipeline Test Results (2026-02-04)
+
+Successfully ran end-to-end build: `e1ef8257-d153-44d4-817f-d2a2bafaa144`
+
+| Phase | Duration | Result |
+|-------|----------|--------|
+| CORE | ~4 min | ✅ Specifications created |
+| OI | ~23 min | ✅ 4 workers, all completed |
+| Status Update | <1s | ✅ Marked success |
+
+**OI Phase Details:**
+- Workers spawned: 4 (parallel)
+- Files created: 9
+- Tests passed: 25
+- Graph invariants: All satisfied
+- Unicode support: Proper grapheme handling
 
 ### 1. Base Templates (in `iteration-2/templates/`)
 
@@ -205,9 +243,12 @@ In `~/.claude/settings.json`:
 7. ~~**Strict completion criteria**~~ ✅ Done (2026-01-30) - Must verify BOTH graph AND tests
 8. ~~**Multi-worker + ralph-loop test**~~ ✅ Done (2026-01-30) - 4 parallel workers, 20 tests, graph complete
 9. ~~**Chaos test (unsolvable requirements)**~~ ✅ Done (2026-01-30) - Graceful partial success
-10. **True iteration-limit chaos test** - Need task that iterates futilely (not obviously impossible)
-11. **Merge to main FABLE** - Integrate iteration-2 learnings into main orchestrator
-12. **Remote MCP deployment** - Deploy servers to Cloudflare Workers (see plan file)
+10. ~~**AWS Infrastructure**~~ ✅ Done (2026-02-04) - Full pipeline deployed and working
+11. ~~**Build Pipeline E2E Test**~~ ✅ Done (2026-02-04) - CORE→OI→Success flow verified
+12. **Deploy step** - OI needs to upload built code to S3 for Lambda deployment
+13. **Frontend chat interface** - Quasar/Vue 3 UI for users
+14. **Memory system** - Persistent context layer for assistant and FABLE (see `memory-system-design.md`)
+15. **True iteration-limit chaos test** - Need task that iterates futilely (not obviously impossible)
 
 ### Test Results (Step 4) - Simple Build
 
@@ -509,4 +550,153 @@ Key files for ralph-loop:
 - OI runs in `.fable/oi-worktree/` to isolate from CORE
 
 Remote deployment plan:
-- `~/.claude/plans/lexical-inventing-wadler.md` - Phase 5 deployment plan
+- `~/.claude/plans/lexical-inventing-wadler.md` - GitHub integration plan
+
+---
+
+## GitHub-Based Persistent Repo Architecture (2026-02-05)
+
+### Problem Solved
+
+Previous architecture lost source code after build:
+- ECS containers were ephemeral
+- Only minified ZIPs uploaded to S3
+- FABLE couldn't iterate on tools it already built
+
+### Solution Implemented
+
+**Monorepo + GitHub Actions CI/CD:**
+
+```
+fable-tools/                      # GitHub repo
+  tools/
+    add-numbers/
+      src/index.ts               # Source preserved
+      __tests__/index.test.ts
+      package.json
+      tool.json                  # MCP schema
+  .github/workflows/
+    deploy-tool.yml              # CI/CD on push to main
+```
+
+**New Flow:**
+```
+User Request → CORE → OI → Push to GitHub → GitHub Actions → Deploy Lambda
+                              ↓
+                         Source preserved
+                              ↓
+                     Can iterate later
+```
+
+### Components Created/Modified
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| GitHub App (Fable Build Bot) | ✅ Created | App ID: 2797220, Installation ID: 108039145 |
+| FABLE-TOOLS repo | ✅ Created | ForeverForwardFlow/FABLE-TOOLS |
+| AWS Secrets Manager | ✅ Created | `fable/dev/github-app` with App credentials |
+| GitHub OIDC Provider | ✅ Deployed | IAM OIDC for GitHub Actions |
+| GitHub Deploy Role | ✅ Deployed | `fable-dev-github-deploy` |
+| Build Container | ✅ Updated | Added GitHub auth to entrypoint.sh |
+| OI Template | ✅ Updated | GitHub push flow instead of S3 ZIPs |
+| Tool Deployer | ✅ Updated | Added git metadata fields |
+
+### Setup Required Before E2E Testing
+
+Add these secrets to the FABLE-TOOLS GitHub repo:
+
+| Secret Name | Value |
+|-------------|-------|
+| `AWS_DEPLOY_ROLE_ARN` | `arn:aws:iam::767398133785:role/fable-dev-github-deploy` |
+| `ARTIFACTS_BUCKET` | `fable-artifacts-dev-767398133785` |
+
+**To add secrets:** Go to https://github.com/ForeverForwardFlow/FABLE-TOOLS/settings/secrets/actions
+
+### E2E Test Plan
+
+Once secrets are configured:
+
+1. **Test new tool creation:**
+   ```bash
+   aws lambda invoke --function-name fable-dev-build-kickoff \
+     --payload '{"action":"start","payload":{"request":"Create a subtract-numbers tool"}}' out.json
+   ```
+   - Verify: Push appears in GitHub
+   - Verify: Actions workflow runs
+   - Verify: Lambda deployed
+   - Verify: DynamoDB has gitRepo, gitCommit
+
+2. **Test tool extension:**
+   ```bash
+   aws lambda invoke --function-name fable-dev-build-kickoff \
+     --payload '{"action":"start","payload":{"request":"Add a square function to the multiply tool"}}' out.json
+   ```
+   - Verify: OI branches from existing
+   - Verify: Modification merged
+   - Verify: Lambda updated
+
+### Key Files Modified
+
+| File | Change |
+|------|--------|
+| `packages/infra/lib/fable-stack.ts` | Added OIDC, deploy role, GitHub secret ref |
+| `packages/infra/build/entrypoint.sh` | Added GitHub auth function |
+| `packages/infra/build/Dockerfile` | Added jq, openssl dependencies |
+| `packages/infra/lambda/tool-deployer/index.ts` | Added git metadata fields |
+| `iteration-2/templates/CLAUDE.md.oi-base` | Replaced S3 with GitHub flow |
+
+---
+
+## Memory Integration (Phase 4) - 2026-02-06
+
+### Problem Solved
+
+FABLE templates already had memory tool calls (memory_session_start, memory_search, memory_create), but ECS containers couldn't connect to the memory system because no MCP server was configured.
+
+### Solution Implemented
+
+Connected ECS build containers to the existing Aurora/pgvector memory Lambda via Lambda Function URL with MCP JSON-RPC protocol.
+
+**Architecture:**
+```
+ECS Container (Claude Code)
+    │  ~/.claude.json with MCP server config
+    │
+    ▼ HTTP (MCP JSON-RPC)
+Memory Lambda (fable-dev-memory)
+    │  Function URL: https://bnlppp4myvostpiie4pxtyrily0yzzik.lambda-url.us-west-2.on.aws/
+    │
+    ▼ pgvector semantic search
+Aurora PostgreSQL
+```
+
+### Components Modified
+
+| Component | Change |
+|-----------|--------|
+| `fable-stack.ts` | Added Lambda Function URL to memoryFn, passed URL to ECS environment |
+| `memory/index.ts` | Added MCP JSON-RPC protocol handler, session_start action, pin action |
+| `entrypoint.sh` | Added `setup_mcp_config()` to write `~/.claude.json` with MCP server |
+
+### Verification
+
+1. **CDK Deployed:** Lambda Function URL created, ECS task definition updated
+2. **Docker Image Pushed:** Platform linux/amd64, contains updated entrypoint.sh
+3. **ECS Logs Show:** "MCP memory server configured: https://..." at container startup
+4. **Memory Lambda URL Works:** Tested via curl with MCP JSON-RPC format:
+   - session_start: Returns memories for project
+   - memory_create: Creates memory with embedding
+   - memory_search: Semantic search working
+
+### Memory Lambda URL
+```
+https://bnlppp4myvostpiie4pxtyrily0yzzik.lambda-url.us-west-2.on.aws/
+```
+
+### Next Steps (Phase 4b - Future)
+
+For production hardening, consider MCP sidecar container pattern:
+- Sidecar runs memory MCP server as stdio process
+- Connects to Aurora with IAM auth (RDS IAM authentication)
+- Claude Code connects via stdio (localhost)
+- No external HTTP exposure

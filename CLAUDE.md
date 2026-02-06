@@ -96,6 +96,7 @@ Integrated Result
 - Templates: `iteration-2/templates/CLAUDE.md.{core,oi,worker}-base`
 - Full vision: `brainstorm.md`
 - Iteration 2 philosophy: `brainstorm-addendum-iteration-2.md`
+- Memory system design: `memory-system-design.md`
 - Iteration 1 (archived): `iteration-1/`
 
 ---
@@ -266,13 +267,15 @@ When some workers succeed and others fail, OI:
 ### After Context Compaction
 When you notice the conversation has compacted:
 1. Re-read this document
-2. Check `CURRENT-WORK.md` for active work
-3. Confirm you understand the current task before proceeding
+2. Call `memory_session_start(project: "FABLE")` to recover persistent context
+3. Check `CURRENT-WORK.md` for active work
+4. Confirm you understand the current task before proceeding
 
 ### Starting a New Session
 1. Read this document first
-2. Ask what we're working on if unclear
-3. Don't assume - verify current state
+2. Call `memory_session_start(project: "FABLE")` to load persistent context
+3. Ask what we're working on if unclear
+4. Don't assume - verify current state
 
 ### Long Sessions
 Periodically remind yourself:
@@ -280,6 +283,60 @@ Periodically remind yourself:
 - Am I keeping templates simple?
 - Am I testing in isolation?
 - Am I writing prompts or services?
+
+---
+
+## Persistent Memory
+
+You have access to a memory system that persists across sessions. **Use it proactively.**
+
+### At Session Start
+After reading this document, call `memory_session_start` with `project: "FABLE"` to retrieve relevant context. This surfaces:
+- User preferences (how Simon likes things done)
+- Recent insights and decisions
+- Gotchas to avoid
+- Current status/where we left off
+- Available capabilities
+- Useful patterns
+
+### During Work - Capture Automatically
+When you discover something worth remembering, capture it immediately using `memory_create`:
+
+| Trigger | Memory Type | Source |
+|---------|-------------|--------|
+| User corrects you or states a preference | `preference` | `user_stated` |
+| User explains why something was decided | `insight` | `user_stated` |
+| You discover something went wrong | `gotcha` | `ai_inferred` |
+| You find an approach that works well | `pattern` | `ai_inferred` |
+| A new capability is built | `capability` | `ai_inferred` |
+| Recording where we left off | `status` | `ai_inferred` |
+
+**Don't wait to be asked.** If it would help future sessions, capture it now.
+
+### What to Capture
+- **Preferences:** Communication style, coding patterns, tool choices, workflow preferences
+- **Insights:** Why decisions were made, architectural reasoning, trade-off discussions
+- **Gotchas:** Things that went wrong, mistakes to avoid, edge cases discovered
+- **Patterns:** Successful approaches, effective workflows, reusable solutions
+- **Status:** End-of-session state, in-progress work, next steps
+
+### Memory Quality
+- Be concise but complete - future you needs to understand without full context
+- Tag memories appropriately for easier retrieval
+- Set higher importance (0.7-0.9) for foundational or frequently-relevant items
+- Use `supersedes` when updating an old understanding
+
+### Example Captures
+```
+User says: "I prefer TypeScript strict mode, always"
+→ memory_create(type: "preference", content: "Always use TypeScript strict mode", source: "user_stated")
+
+You discover: Tests fail when run from wrong directory
+→ memory_create(type: "gotcha", content: "Tests must be run from project root, not subdirectory", tags: ["testing"])
+
+End of session:
+→ memory_create(type: "status", content: "Completed memory system Phase 1. Next: test automatic recall and capture patterns")
+```
 
 ---
 

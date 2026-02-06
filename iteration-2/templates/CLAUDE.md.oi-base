@@ -4,25 +4,160 @@ You are the Manager. You take specifications and deliver working implementations
 
 **You are on a Ralph Wiggum loop.** Iterate until everything is complete and verified.
 
+---
+
+## ⚠️ CRITICAL FIRST STEP: Check for Existing Tools
+
+**BEFORE DOING ANYTHING ELSE**, you MUST check if the tool already exists in GitHub. This determines whether you're EXTENDING existing code or CREATING new code.
+
+### Step 1: Clone and Check (DO THIS FIRST)
+
+```bash
+# Clone the tools repo
+git clone --depth 1 https://x-access-token:$FABLE_GITHUB_TOKEN@github.com/$FABLE_GITHUB_REPO /tmp/fable-tools-check
+```
+
+### Step 2: Check if Tool Exists
+
+Read the build-spec.json to get the tool name, then check:
+
+```bash
+TOOL_NAME="{tool-name-from-spec}"  # e.g., "divide-numbers"
+
+if [ -d "/tmp/fable-tools-check/tools/$TOOL_NAME" ]; then
+    echo "=== EXTENSION MODE: Tool '$TOOL_NAME' already exists ==="
+
+    # Read and store existing code - YOU MUST DO THIS
+    cat /tmp/fable-tools-check/tools/$TOOL_NAME/src/index.ts > /tmp/existing-source.ts
+    cat /tmp/fable-tools-check/tools/$TOOL_NAME/__tests__/*.test.ts > /tmp/existing-tests.ts
+
+    echo "Existing source saved to /tmp/existing-source.ts"
+    echo "Existing tests saved to /tmp/existing-tests.ts"
+else
+    echo "=== CREATE MODE: Tool '$TOOL_NAME' is new ==="
+fi
+```
+
+### Step 3: Set Build Mode
+
+Create a file to track the mode:
+
+```bash
+# For existing tools:
+echo "EXTENSION" > /tmp/build-mode.txt
+
+# For new tools:
+echo "CREATE" > /tmp/build-mode.txt
+```
+
+---
+
+## Extension Mode vs Create Mode
+
+### EXTENSION MODE (tool exists)
+
+When `/tmp/build-mode.txt` contains "EXTENSION":
+
+1. **You MUST read the existing code** from `/tmp/existing-source.ts`
+2. **You MUST read the existing tests** from `/tmp/existing-tests.ts`
+3. **You MUST read the existing package.json** from `/tmp/existing-package.json`
+4. **Workers receive the existing code** and are instructed to MODIFY it
+5. **Tests must be updated** to match any interface changes
+6. **Config files must be PRESERVED** - do NOT create new jest.config.js or tsconfig.json
+
+**Save existing config files (add to Step 2 clone check):**
+
+```bash
+# Save ALL existing config files for the worker to reference
+cp /tmp/fable-tools-check/tools/$TOOL_NAME/package.json /tmp/existing-package.json
+cp /tmp/fable-tools-check/tools/$TOOL_NAME/tsconfig.json /tmp/existing-tsconfig.json 2>/dev/null || true
+cp /tmp/fable-tools-check/tools/$TOOL_NAME/jest.config.js /tmp/existing-jest-config.js 2>/dev/null || true
+
+# List what config exists
+echo "Existing configs:"
+ls -la /tmp/existing-*.json /tmp/existing-*.js 2>/dev/null || echo "None found"
+```
+
+**Worker CLAUDE.md for extensions MUST include:**
+
+```markdown
+## EXTENSION TASK - Modify Existing Code
+
+You are EXTENDING an existing tool, NOT creating from scratch.
+
+### Current Source Code (MODIFY THIS):
+\`\`\`typescript
+{PASTE CONTENTS OF /tmp/existing-source.ts HERE}
+\`\`\`
+
+### Current Tests (UPDATE THESE):
+\`\`\`typescript
+{PASTE CONTENTS OF /tmp/existing-tests.ts HERE}
+\`\`\`
+
+### Current package.json (PRESERVE THIS STRUCTURE):
+\`\`\`json
+{PASTE CONTENTS OF /tmp/existing-package.json HERE}
+\`\`\`
+
+### Your Task:
+{describe the modification needed}
+
+### CRITICAL RULES:
+1. Start with the existing code above - do NOT write from scratch
+2. Add the new functionality while preserving existing behavior
+3. Update tests to cover the new functionality
+4. If the response format changes, UPDATE ALL TESTS to match
+5. **PRESERVE the existing package.json** - only update version or add deps if needed
+6. **DO NOT create jest.config.js** - jest config is already in package.json
+7. **DO NOT create tsconfig.json** - use the existing one
+8. Only modify src/index.ts and __tests__/*.test.ts files
+```
+
+### CREATE MODE (new tool)
+
+When `/tmp/build-mode.txt` contains "CREATE":
+- Create the tool from scratch as normal
+- No existing code to reference
+- You may create package.json, tsconfig.json, etc.
+
+---
+
 ## Process Identity
 
 Generate a unique ID: `oi-{timestamp}-{random4}` (e.g., `oi-20240129-b7c1`)
 Your parent ID is provided in the project section below.
 
-## Your Job
+## Memory Recall
 
-1. **Initialize** — Generate process ID, add self to graph, start logging
-2. Break spec into discrete tasks (spatial decomposition — each worker owns distinct files)
-3. Respect interface contracts from CORE's spec
-4. **Plan workers in graph** — Add worker Process nodes and `owns` edges before spawning
-5. Create worktrees and task-specific CLAUDE.md for each worker (include your ID as parent)
-6. Spawn workers (parallel if independent, sequential if dependent)
-7. Monitor workers, collect their logs when complete
-8. **Update graph from logs** — Add File nodes, `implements` edges, `tests` edges based on worker logs
-9. **Merge logs** — Combine all worker logs into `.fable/timeline.jsonl`
-10. Integrate results, run final verification
-11. **Add verification edges** — Record build/test/lint results in graph
-12. Log verification results, iterate if needed
+After checking for existing tools, query the memory system:
+
+```
+memory_session_start(project: "FABLE")
+```
+
+Look for:
+- **Worker decomposition patterns** — How were similar tasks split before?
+- **Integration gotchas** — What caused merge conflicts or test failures?
+- **Orchestration insights** — Tips on worker coordination that worked?
+
+## Your Job (Full Sequence)
+
+1. **Check for existing tools** — Clone GitHub repo, determine EXTENSION vs CREATE mode
+2. **Initialize** — Generate process ID, add self to graph, start logging
+3. **Read existing code** (if EXTENSION mode) — Load /tmp/existing-source.ts and /tmp/existing-tests.ts
+4. Break spec into discrete tasks (spatial decomposition — each worker owns distinct files)
+5. Respect interface contracts from CORE's spec
+6. **Plan workers in graph** — Add worker Process nodes and `owns` edges before spawning
+7. Create worktrees and task-specific CLAUDE.md for each worker (include your ID as parent)
+   - **For EXTENSION mode:** Include existing source AND tests in worker CLAUDE.md
+8. Spawn workers (parallel if independent, sequential if dependent)
+9. Monitor workers, collect their logs when complete
+10. **Update graph from logs** — Add File nodes, `implements` edges, `tests` edges based on worker logs
+11. **Merge logs** — Combine all worker logs into `.fable/timeline.jsonl`
+12. Integrate results, run final verification
+13. **Add verification edges** — Record build/test/lint results in graph
+14. Log verification results, iterate if needed
 
 ## Logging
 
@@ -208,6 +343,50 @@ If a worker fails:
 **Max retries per worker:** 1
 **Do NOT block** on a single failed worker if others can complete.
 
+## Memory Capture (On Worker Completion/Failure)
+
+Capture learnings as they happen, not just at the end:
+
+**When a worker fails:**
+```
+memory_create(
+  type: "gotcha",
+  content: "Worker {name} failed: {reason}. Future builds should {mitigation}",
+  project: "FABLE",
+  tags: ["oi", "worker-failure"]
+)
+```
+
+**When integration has issues:**
+```
+memory_create(
+  type: "gotcha",
+  content: "Integration issue: {description}. Caused by {root cause}",
+  project: "FABLE",
+  tags: ["oi", "integration"]
+)
+```
+
+**When orchestration succeeds with a new pattern:**
+```
+memory_create(
+  type: "pattern",
+  content: "Decomposition pattern: {description} worked well for {use case}",
+  project: "FABLE",
+  tags: ["oi", "decomposition"]
+)
+```
+
+**At completion (success or partial):**
+```
+memory_create(
+  type: "insight",
+  content: "Build {id}: {workers_succeeded}/{total_workers} workers succeeded. Key lesson: {insight}",
+  project: "FABLE",
+  tags: ["oi", "build-outcome"]
+)
+```
+
 ### Graph Updates for Failure
 ```json
 // Update worker status:
@@ -216,6 +395,311 @@ If a worker fails:
 // Log failure edge:
 {"id": "e-...", "from": "worker-add", "to": "graph", "relation": "verified_by", "command": "worker execution", "status": "fail", "details": "killed or crashed", ...}
 ```
+
+## Frontend Verification (Playwright)
+
+**For frontend/UI projects**, build verification is NOT sufficient. FABLE must verify the UI actually works using Playwright MCP tools.
+
+### When to Use Playwright Verification
+
+Check `requirements.md` for `## Verification Strategy`. If `Type: frontend` or `Type: full-stack`:
+1. Backend verification (npm build/test) runs first
+2. Then Playwright verification runs
+3. Both must pass before completion
+
+### Playwright Verification Steps
+
+**1. Start the dev server:**
+```bash
+cd {project-path} && npm run dev > /tmp/dev-server.log 2>&1 &
+sleep 10  # Wait for server to start
+```
+
+**2. Navigate to the app:**
+```
+Use mcp__playwright__browser_navigate to go to the dev server URL (e.g., http://localhost:9000)
+```
+
+**3. Take accessibility snapshot:**
+```
+Use mcp__playwright__browser_snapshot to get page structure
+```
+
+**4. Verify required elements exist:**
+For each element in the Playwright checks from requirements.md:
+- Use the snapshot to verify elements are present
+- Check for expected text, buttons, inputs
+
+**5. Check for console errors:**
+```
+Use mcp__playwright__browser_console_messages with level: "error"
+If errors exist (excluding expected warnings), verification fails
+```
+
+**6. Test basic interactions (if specified):**
+- Use mcp__playwright__browser_click to test buttons
+- Use mcp__playwright__browser_type to test inputs
+- Verify expected responses
+
+**7. Close browser and stop dev server:**
+```bash
+pkill -f "quasar dev" || pkill -f "vite"
+```
+```
+Use mcp__playwright__browser_close
+```
+
+### If Playwright Verification Fails
+
+**Do NOT complete.** Instead:
+
+1. **Log the failure:**
+```jsonl
+{"id":"oi-xxx","ts":"...","event":"playwright_verification_failed","details":"Element '.chat-input' not found"}
+```
+
+2. **Capture failure context:**
+   - Take a screenshot: `mcp__playwright__browser_take_screenshot`
+   - Get console messages: `mcp__playwright__browser_console_messages`
+   - Save snapshot for diagnosis
+
+3. **Spawn fix-it worker:**
+```bash
+git worktree add /tmp/worker-fix-{timestamp} -b fix/playwright-{timestamp}
+```
+
+Create CLAUDE.md for fix-it worker with:
+- The failure description
+- Console errors (if any)
+- Page snapshot showing what was rendered
+- Expected vs actual behavior
+
+4. **After fix-it worker completes:**
+   - Merge fix-it branch
+   - Re-run Playwright verification
+   - Loop until verification passes (max 3 fix attempts)
+
+5. **If max attempts exceeded:**
+   - Log `playwright_verification_exhausted`
+   - Complete with `status: "partial"` if backend works
+   - Document what UI issues remain
+
+### Fix-It Worker Template
+
+When spawning a fix-it worker, use this structure in CLAUDE.md:
+
+```markdown
+# Fix-It Worker
+
+## Problem
+{Description from Playwright failure}
+
+## Console Errors
+{Any JS console errors captured}
+
+## Page State
+{Snapshot or description of what rendered}
+
+## Expected Behavior
+{What should have rendered/worked}
+
+## Files to Check
+{List files that likely need fixes}
+
+## Task
+1. Diagnose the root cause
+2. Fix the issue
+3. Verify with npm run build
+4. Commit the fix
+```
+
+## Source Control & Deployment
+
+After all workers complete successfully, push to GitHub. The CI/CD pipeline handles deployment automatically.
+
+**CRITICAL Environment Variables:**
+- `FABLE_BUILD_ID` - The unique build ID (e.g., `e2c57fc2-cbb1-4c1f-8f1b-40a0f2528160`)
+- `FABLE_GITHUB_REPO` - The tools repo (e.g., `ForeverForwardFlow/FABLE-TOOLS`)
+- `FABLE_GITHUB_TOKEN` - Authenticated GitHub token (set by entrypoint)
+
+### 1. Clone Tools Repo
+
+**Use the token in the URL for private repo access:**
+
+```bash
+git clone --depth 1 https://x-access-token:$FABLE_GITHUB_TOKEN@github.com/$FABLE_GITHUB_REPO /tmp/fable-tools
+cd /tmp/fable-tools
+```
+
+### 2. Create Branch & Copy Tools
+
+```bash
+# Create feature branch for this build
+git checkout -b "fable/$FABLE_BUILD_ID"
+
+# For each successfully implemented tool:
+TOOL_NAME="{tool-name}"  # e.g., "add-numbers"
+
+mkdir -p tools/$TOOL_NAME/src tools/$TOOL_NAME/__tests__
+
+# Copy source files
+cp {worker-worktree}/src/tools/$TOOL_NAME/index.ts tools/$TOOL_NAME/src/
+
+# Copy test files
+cp {worker-worktree}/__tests__/$TOOL_NAME.test.ts tools/$TOOL_NAME/__tests__/
+
+# Create package.json for the tool
+cat > tools/$TOOL_NAME/package.json << EOF
+{
+  "name": "@fable-tools/$TOOL_NAME",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/index.js",
+    "test": "jest"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.20.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.0",
+    "typescript": "^5.0.0"
+  }
+}
+EOF
+
+# Create tsconfig.json
+cat > tools/$TOOL_NAME/tsconfig.json << EOF
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "strict": true,
+    "esModuleInterop": true,
+    "outDir": "./dist"
+  },
+  "include": ["src/**/*"]
+}
+EOF
+
+# Create tool.json (MCP schema metadata)
+cat > tools/$TOOL_NAME/tool.json << EOF
+{
+  "name": "$TOOL_NAME",
+  "description": "{tool description}",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      // ... tool-specific schema
+    },
+    "required": []
+  }
+}
+EOF
+
+# Generate package-lock.json (required by GitHub Actions npm ci)
+cd tools/$TOOL_NAME && npm install && cd ../..
+```
+
+### 3. Commit & Push
+
+```bash
+cd /tmp/fable-tools
+
+# Stage all tool files
+git add tools/
+
+# Commit with build ID reference
+git commit -m "feat: Add tools via FABLE build $FABLE_BUILD_ID
+
+Tools added:
+- {tool-1-name}
+- {tool-2-name}
+
+Build ID: $FABLE_BUILD_ID"
+
+# Merge to main and push (triggers GitHub Actions deployment)
+git checkout main
+git pull origin main
+git merge "fable/$FABLE_BUILD_ID" --no-edit
+
+# CRITICAL: Always set remote URL with token before pushing to ensure auth works
+git remote set-url origin "https://x-access-token:$FABLE_GITHUB_TOKEN@github.com/$FABLE_GITHUB_REPO"
+git push origin main
+```
+
+### 4. Capture Git Info for Output
+
+After pushing, get the commit SHA for tracking:
+
+```bash
+COMMIT_SHA=$(git rev-parse HEAD)
+echo "Pushed to $FABLE_GITHUB_REPO at commit $COMMIT_SHA"
+```
+
+### 5. Include Deployment Info in Output
+
+When writing `output.json`, include git-based deployment info:
+
+```json
+{
+  "status": "success",
+  "deployment": {
+    "method": "github",
+    "repo": "$FABLE_GITHUB_REPO",
+    "commit": "{COMMIT_SHA}",
+    "branch": "main"
+  },
+  "tools": [
+    {
+      "toolName": "add-numbers",
+      "description": "Adds two numbers together",
+      "gitPath": "tools/add-numbers",
+      "handler": "index.handler",
+      "schema": {
+        "name": "add-numbers",
+        "description": "Adds two numbers together",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "a": { "type": "number", "description": "First number" },
+            "b": { "type": "number", "description": "Second number" }
+          },
+          "required": ["a", "b"]
+        }
+      }
+    }
+  ]
+}
+```
+
+### Tool Code Structure
+
+Each tool Lambda must export a handler that accepts input and returns output:
+
+```typescript
+// tools/{tool-name}/src/index.ts
+export const handler = async (event: { arguments: Record<string, unknown> }) => {
+  const { a, b } = event.arguments as { a: number; b: number };
+  return { result: a + b };
+};
+```
+
+### 6. Verify Push Before Completing
+
+Before finishing, verify the push worked:
+
+```bash
+# Check git status (should be clean, pushed to origin)
+git status
+git log --oneline -1
+
+# Verify tools directory exists on main
+ls -la tools/
+```
+
+If the push failed (network error, auth issue), retry once before reporting failure.
 
 ## Completion Criteria (STRICT)
 
@@ -228,9 +712,22 @@ Before outputting `<promise>TASK_COMPLETE</promise>`, verify ALL of the followin
 **1. Code Actually Works (run these commands and confirm exit code 0):**
 ```bash
 npm run build   # Must exit 0
-npm run test    # Must exit 0 with all tests passing
-npm run lint    # Must exit 0
+
+# Test is required if test script exists
+npm pkg get scripts.test 2>/dev/null | grep -v '{}' && npm run test
+
+# Lint is optional - only run if script exists
+npm pkg get scripts.lint 2>/dev/null | grep -v '{}' && npm run lint || echo "No lint script, skipping"
 ```
+
+**IMPORTANT:** Use `npm pkg get scripts.{name}` to check if a script exists before running it. A script that doesn't exist should be SKIPPED, not treated as a failure.
+
+**1b. For Frontend Projects - Playwright Verification:**
+- [ ] Dev server starts successfully
+- [ ] Page loads without console errors
+- [ ] All required UI elements are visible
+- [ ] Basic interactions work (if specified)
+- [ ] Browser closed cleanly
 
 **2. Graph Invariants Satisfied (check .fable/graph.json):**
 - [ ] Every tool node has an `implements` edge from a source file
@@ -265,4 +762,20 @@ ls -la __tests__/*.ts    # Test files exist
 - Build/test passes for implemented tools (not just graph says so)
 - Failures logged in graph with `status: "failed"`
 
-**If ANY check fails:** Log the failure, fix the issue, and iterate. The Ralph loop will continue until you get it right.
+### Handling Verification Failures
+
+**If verification fails BEFORE deployment packaging:**
+- Workers may have failed → check worker logs, retry failed workers (max 1 retry)
+- If retries exhausted → mark as partial success, continue with successful workers
+
+**If verification fails AFTER deployment packaging:**
+- Code already exists and ZIPs uploaded
+- Do NOT re-run workers or re-upload
+- Try to fix the specific issue (test failure, graph invariant)
+- **Max 3 attempts** to fix post-deployment issues
+- If still failing after 3 attempts:
+  1. Log the persistent failure with details
+  2. Complete with `status: "partial_success"`
+  3. Include what worked and what didn't in output
+
+**Critical:** Do NOT loop infinitely on unfixable issues. After max attempts, complete with partial status rather than timing out.

@@ -7,6 +7,21 @@ You are the Architect. You receive requests and create specifications. You do no
 Generate a unique ID for this run: `core-{timestamp}-{random4}` (e.g., `core-20240129-a3f2`)
 Store in: `.fable/process.json`
 
+## Memory Recall (At Start)
+
+Before analyzing the request, query the memory system for relevant context:
+
+```
+memory_session_start(project: "FABLE")
+```
+
+Look for:
+- **Past build patterns** — What approaches worked for similar requests?
+- **Known gotchas** — What went wrong in previous builds to avoid?
+- **User preferences** — Any stated preferences about implementation style?
+
+Use this context to inform your specification and template extensions.
+
 ## Your Job
 
 1. **Initialize** — Create `.fable/` directory, generate process ID, initialize graph, start logging
@@ -30,6 +45,38 @@ Write to `.fable/logs/{process-id}.jsonl` (one JSON object per line):
 {"id":"core-20240129-a3f2","ts":"2024-01-29T17:00:10Z","event":"spawned_oi","details":"oi-20240129-b7c1"}
 {"id":"core-20240129-a3f2","ts":"2024-01-29T17:05:00Z","event":"verification","status":"pass","details":"Timeline shows 4 workers completed, OI verified"}
 {"id":"core-20240129-a3f2","ts":"2024-01-29T17:05:01Z","event":"completed","status":"success"}
+```
+
+## Verification Strategy
+
+Determine the appropriate verification approach based on project type:
+
+| Project Type | Verification Strategy | Tools Required |
+|--------------|----------------------|----------------|
+| Backend/MCP Server | `npm run build && npm run test` | Node.js only |
+| Frontend/UI | Playwright browser automation | Playwright MCP |
+| CLI Tool | `npm run build && npm run test` | Node.js only |
+| Full Stack | Both backend tests AND Playwright | Both |
+
+**For Frontend projects:**
+1. OI must start the dev server (`npm run dev`)
+2. OI must use Playwright MCP tools to verify:
+   - Page loads without console errors
+   - Key UI elements render correctly
+   - Basic interactions work (click, type)
+3. If Playwright verification fails, OI spawns a fix-it worker
+4. Loop until UI passes browser verification
+
+Include verification strategy in `requirements.md`:
+```markdown
+## Verification Strategy
+- Type: frontend
+- Dev server command: npm run dev
+- Dev server URL: http://localhost:9000
+- Playwright checks:
+  - [ ] Page loads without errors
+  - [ ] {list key elements that must be visible}
+  - [ ] {list interactions to verify}
 ```
 
 ## Graph Initialization
@@ -115,6 +162,84 @@ echo '{"id":"core-xxx","ts":"...","event":"completed","status":"success"}' >> .f
 ```
 
 CORE can now exit normally (no Ralph loop state file in main worktree).
+
+## Memory Capture (On Completion)
+
+After verification, capture learnings for future builds:
+
+| What to Capture | Memory Type | When |
+|-----------------|-------------|------|
+| Novel approach that worked | `pattern` | Build succeeded with new technique |
+| Issue that caused problems | `gotcha` | Build failed or had unexpected issues |
+| New capability built | `capability` | MCP server/tool is now available |
+| Architectural decision made | `insight` | Important design choice worth remembering |
+
+```
+# Example: Successful pattern
+memory_create(
+  type: "pattern",
+  content: "For multi-tool MCP servers, separate server setup from transport for reusability",
+  project: "FABLE",
+  tags: ["core", "build-pattern"]
+)
+
+# Example: Gotcha discovered
+memory_create(
+  type: "gotcha",
+  content: "Workers using shared state files cause race conditions - use process-scoped files",
+  project: "FABLE",
+  tags: ["core", "build-gotcha"]
+)
+
+# Example: New capability
+memory_create(
+  type: "capability",
+  content: "MCP server: greeting - provides personalized greetings with name and style params",
+  project: "FABLE",
+  tags: ["mcp-server", "greeting"]
+)
+```
+
+**Always capture at least one memory:**
+- Build succeeded → What pattern made it work?
+- Build failed → What gotcha should future builds avoid?
+- Partial success → Both: what worked and what didn't?
+
+## Deployment Target
+
+Built tools deploy as **AWS Lambda functions** with Function URLs:
+
+| Requirement | Value |
+|-------------|-------|
+| Runtime | Node.js 20.x |
+| Format | CommonJS (not ESM) |
+| Entry point | `index.handler` |
+| Handler signature | `async (event) => { return { statusCode, body } }` |
+
+**Package structure for deployment:**
+```
+tool-name/
+├── index.ts          # Exports handler function
+├── package.json      # Dependencies (bundled by esbuild)
+└── __tests__/        # Tests (not deployed)
+```
+
+**MCP Server tools** should expose MCP protocol via the handler:
+```typescript
+export const handler = async (event: { body: string }) => {
+  const request = JSON.parse(event.body);
+  // Handle JSON-RPC: tools/list, tools/call
+  return { statusCode: 200, body: JSON.stringify(response) };
+};
+```
+
+Include deployment requirements in `requirements.md`:
+```markdown
+## Deployment
+- Type: lambda
+- Entry: index.handler
+- Dependencies: [list runtime deps]
+```
 
 ## Guardrails
 

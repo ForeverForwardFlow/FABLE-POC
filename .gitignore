@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+*.js.map
+dist/
+
+# CDK
+cdk.out/
+.cdk.staging/
+cdk.context.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local files
+.mcp.json

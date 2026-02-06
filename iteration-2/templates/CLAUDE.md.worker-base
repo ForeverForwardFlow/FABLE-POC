@@ -8,6 +8,19 @@ You complete a focused task. You do not coordinate with other workers — just d
 
 Your worker ID and parent OI ID are provided in the task section below.
 
+## Memory Recall (At Start)
+
+Before implementing, query for relevant context:
+
+```
+memory_search(query: "implementing {task-type}", project: "FABLE", limit: 5)
+```
+
+Look for:
+- **Implementation patterns** — How were similar tools built?
+- **Testing gotchas** — What edge cases are commonly missed?
+- **Framework quirks** — Known issues with the tech stack?
+
 ## Your Job
 
 1. **Initialize** — Create `.fable/logs/` directory, start logging with `started` event
@@ -116,8 +129,12 @@ Verify ALL of the following:
 ```bash
 npm run build   # Exit code must be 0
 npm run test    # Exit code must be 0, all tests pass
-npm run lint    # Exit code must be 0
+
+# Lint is optional - only run if configured
+npm pkg get scripts.lint 2>/dev/null | grep -v '{}' && npm run lint || echo "No lint script, skipping"
 ```
+
+**NOTE:** Build and test are required. Lint is only required if the project has a lint script configured.
 
 **2. Timeline Contains Required Events:**
 - [ ] `started` event logged
@@ -147,6 +164,73 @@ npm run test -- --reporter=verbose
 2. Try a simpler approach
 3. If truly blocked after multiple attempts, log `completed` with `status: failure` and describe the blocker
 4. Do NOT output `TASK_COMPLETE` if the task isn't actually complete
+
+## Fix-It Worker Mode
+
+If your task section below contains "## Problem" instead of normal task description, you are a **fix-it worker**. Your job is to diagnose and fix an issue found during Playwright verification.
+
+### Fix-It Process
+
+1. **Understand the problem:**
+   - Read the Problem description carefully
+   - Check any console errors provided
+   - Understand the expected vs actual behavior
+
+2. **Diagnose root cause:**
+   - Check the files listed in "Files to Check"
+   - Look for typos, missing imports, incorrect selectors
+   - Use `Explore` subagent if needed to search codebase
+
+3. **Implement the fix:**
+   - Make minimal changes to fix the issue
+   - Don't refactor or improve unrelated code
+   - Log each file you modify
+
+4. **Verify the fix:**
+   ```bash
+   npm run build  # Must pass
+   ```
+   Note: You cannot run Playwright yourself - OI will verify after merge
+
+5. **Commit and complete:**
+   - Commit with message: "fix: {brief description}"
+   - Log `completed` with `status: success`
+
+### Fix-It Timeline Events
+
+```jsonl
+{"id":"worker-fix-xxx","parent":"oi-xxx","ts":"...","event":"started","details":"Fixing: {problem summary}"}
+{"id":"worker-fix-xxx","parent":"oi-xxx","ts":"...","event":"diagnosis","details":"{root cause identified}"}
+{"id":"worker-fix-xxx","parent":"oi-xxx","ts":"...","event":"file_modified","path":"src/...","details":"{what was changed}"}
+{"id":"worker-fix-xxx","parent":"oi-xxx","ts":"...","event":"verification_run","command":"npm run build","exit_code":0}
+{"id":"worker-fix-xxx","parent":"oi-xxx","ts":"...","event":"completed","status":"success","fix":"{summary of fix}"}
+```
+
+## Memory Capture (When Notable)
+
+Capture learnings that would help future workers:
+
+**When you discover a useful pattern:**
+```
+memory_create(
+  type: "pattern",
+  content: "For {task-type}: {what worked and why}",
+  project: "FABLE",
+  tags: ["worker", "{task-type}"]
+)
+```
+
+**When you hit a non-obvious issue:**
+```
+memory_create(
+  type: "gotcha",
+  content: "{task-type} gotcha: {issue}. Solution: {how you fixed it}",
+  project: "FABLE",
+  tags: ["worker", "{task-type}"]
+)
+```
+
+**Don't over-capture** — Only create memories for insights that would genuinely help future builds. Common issues (typos, missing imports) don't need memories.
 
 ---
 
