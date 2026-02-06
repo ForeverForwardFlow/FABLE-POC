@@ -579,12 +579,13 @@ export class FableStack extends cdk.Stack {
       resources: [`arn:aws:lambda:${this.region}:${this.account}:function:fable-${stage}-tool-*`],
     }));
 
-    // Function URL for MCP Gateway (AWS_IAM auth for security)
+    // Function URL for MCP Gateway (NONE auth for browser access from frontend)
+    // Note: In production, consider adding API Gateway with Cognito auth
     const mcpGatewayUrl = mcpGatewayFn.addFunctionUrl({
-      authType: lambda.FunctionUrlAuthType.AWS_IAM,
+      authType: lambda.FunctionUrlAuthType.NONE,
       cors: {
         allowedOrigins: ['*'],
-        allowedMethods: [lambda.HttpMethod.POST],
+        allowedMethods: [lambda.HttpMethod.GET, lambda.HttpMethod.POST],
         allowedHeaders: ['content-type', 'authorization'],
       },
     });

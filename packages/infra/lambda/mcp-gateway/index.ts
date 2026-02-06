@@ -66,11 +66,30 @@ export const handler = async (event: LambdaEvent): Promise<{
   headers: Record<string, string>;
   body: string;
 }> => {
+  // Content-Type header (CORS is handled by Lambda Function URL config)
   const headers = {
     'Content-Type': 'application/json',
   };
 
-  // Only accept POST
+  // Handle GET for simple tool listing (browser-friendly)
+  if (event.requestContext.http.method === 'GET') {
+    try {
+      const response = await handleToolsList();
+      return {
+        statusCode: 200,
+        headers,
+        body: JSON.stringify(response.result),
+      };
+    } catch (error) {
+      return {
+        statusCode: 500,
+        headers,
+        body: JSON.stringify({ error: String(error) }),
+      };
+    }
+  }
+
+  // Only accept POST for MCP protocol
   if (event.requestContext.http.method !== 'POST') {
     return {
       statusCode: 405,
