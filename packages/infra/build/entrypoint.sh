@@ -98,7 +98,7 @@ setup_mcp_config() {
     },
     "playwright": {
       "command": "npx",
-      "args": ["@anthropic-ai/mcp-playwright"]
+      "args": ["@playwright/mcp@latest"]
     }
   }
 }

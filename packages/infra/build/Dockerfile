@@ -39,10 +39,10 @@ RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2
     && rm -rf awscliv2.zip aws
 
 # Install Claude Code CLI and Playwright MCP
-RUN npm install -g @anthropic-ai/claude-code @anthropic-ai/mcp-playwright
+RUN npm install -g @anthropic-ai/claude-code @playwright/mcp
 
 # Install Playwright browsers (Chromium only to save space)
-RUN npx playwright install chromium
+RUN npx @playwright/mcp install-browsers chromium || npx playwright install chromium || true
 
 # Create non-root user for Claude Code (required for --dangerously-skip-permissions)
 RUN groupadd -r fable && useradd -r -g fable -d /fable -s /bin/bash fable
