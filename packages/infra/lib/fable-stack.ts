@@ -884,18 +884,20 @@ export class FableStack extends cdk.Stack {
     const formatOiError = new sfn.Pass(this, 'FormatOiError', {
       parameters: {
         'buildId.$': '$.buildId',
-        'error.$': '$.oiOutput.output.error',
+        'error': 'OI phase did not produce successful output',
       },
     });
     formatOiError.next(markFailureTask);
 
-    // Check if OI phase succeeded (Claude may exit 0 but output success:false)
+    // Check if OI phase succeeded
+    // OI output uses "status": "success" (string), not "success": true (boolean)
+    // Also handle case where status field is missing (no output.json produced)
     const checkOiSuccessChoice = new sfn.Choice(this, 'CheckOiSuccess')
       .when(
-        sfn.Condition.booleanEquals('$.oiOutput.output.success', false),
-        formatOiError
+        sfn.Condition.stringEquals('$.oiOutput.output.status', 'success'),
+        deployTask.addCatch(markFailureTask, { resultPath: '$.error' }).next(markSuccessTask)
       )
-      .otherwise(deployTask.addCatch(markFailureTask, { resultPath: '$.error' }).next(markSuccessTask));
+      .otherwise(formatOiError);
 
     const definition = coreTask
       .addCatch(markFailureTask, { resultPath: '$.error' })
