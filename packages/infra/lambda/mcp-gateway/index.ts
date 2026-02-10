@@ -299,20 +299,9 @@ async function invokeToolFunction(
   const functionName = `fable-${STAGE}-tool-${tool.toolName}`;
   console.log(`Invoking tool ${tool.toolName} via Lambda: ${functionName}`);
 
-  // Build MCP JSON-RPC request payload
-  const mcpRequest = {
-    jsonrpc: '2.0',
-    method: 'tools/call',
-    params: {
-      name: tool.schema.name,
-      arguments: args,
-    },
-    id: Date.now(),
-  };
-
-  // Lambda event structure (matches Function URL event format)
+  // Send arguments directly - FABLE-built tools expect { arguments: {...} }
   const lambdaPayload = {
-    body: JSON.stringify(mcpRequest),
+    arguments: args,
   };
 
   // Invoke the tool Lambda directly

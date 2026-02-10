@@ -314,6 +314,7 @@ export class FableStack extends cdk.Stack {
     });
 
     // Chat Lambda (needs VPC for Aurora, Bedrock access)
+    // Uses CJS format for better AWS SDK v3 compatibility with @smithy packages
     const chatFn = new lambdaNodejs.NodejsFunction(this, 'ChatFn', {
       functionName: `fable-${stage}-chat`,
       entry: path.join(__dirname, '../lambda/chat/index.ts'),
@@ -326,7 +327,14 @@ export class FableStack extends cdk.Stack {
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       securityGroups: [lambdaSecurityGroup],
       logRetention: logs.RetentionDays.ONE_WEEK,
-      bundling: bundlingOptions,
+      bundling: {
+        minify: true,
+        sourceMap: true,
+        target: 'node20',
+        format: lambdaNodejs.OutputFormat.CJS,
+        // Force bundle these packages - they're not in Lambda runtime
+        nodeModules: ['@smithy/signature-v4', '@aws-crypto/sha256-js'],
+      },
     });
 
     // Grant permissions
@@ -338,6 +346,16 @@ export class FableStack extends cdk.Stack {
     this.toolsTable.grantReadData(chatFn); // Chat needs to discover tools
     dbCredentials.grantRead(chatFn);
     this.artifactsBucket.grantReadWrite(chatFn);
+
+    // Router needs to invoke Chat Lambda
+    chatFn.grantInvoke(routerFn);
+
+    // Bedrock permissions for Router Lambda (intent classification)
+    routerFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['bedrock:InvokeModel'],
+      resources: ['*'],
+    }));
 
     // Bedrock permissions for Chat Lambda
     chatFn.addToRolePolicy(new iam.PolicyStatement({
@@ -720,6 +738,7 @@ export class FableStack extends cdk.Stack {
     });
 
     this.buildsTable.grantReadWriteData(buildKickoffFn);
+    buildKickoffFn.grantInvoke(routerFn); // Router triggers builds
 
     // Lambda to retrieve task output from S3
     const getTaskOutputFn = new lambdaNodejs.NodejsFunction(this, 'GetTaskOutputFn', {
@@ -859,14 +878,31 @@ export class FableStack extends cdk.Stack {
     });
 
     // Build the state machine definition
-    // Flow: CoreTask -> GetCoreOutput -> OiTask -> GetOiOutput -> Deploy -> MarkSuccess
+    // Flow: CoreTask -> GetCoreOutput -> CheckCoreSuccess -> OiTask -> GetOiOutput -> CheckOiSuccess -> Deploy -> MarkSuccess
+
+    // Pass state to format OI error for markFailureTask
+    const formatOiError = new sfn.Pass(this, 'FormatOiError', {
+      parameters: {
+        'buildId.$': '$.buildId',
+        'error.$': '$.oiOutput.output.error',
+      },
+    });
+    formatOiError.next(markFailureTask);
+
+    // Check if OI phase succeeded (Claude may exit 0 but output success:false)
+    const checkOiSuccessChoice = new sfn.Choice(this, 'CheckOiSuccess')
+      .when(
+        sfn.Condition.booleanEquals('$.oiOutput.output.success', false),
+        formatOiError
+      )
+      .otherwise(deployTask.addCatch(markFailureTask, { resultPath: '$.error' }).next(markSuccessTask));
+
     const definition = coreTask
       .addCatch(markFailureTask, { resultPath: '$.error' })
       .next(getCoreOutputTask.addCatch(markFailureTask, { resultPath: '$.error' }))
       .next(oiTask.addCatch(markFailureTask, { resultPath: '$.error' }))
       .next(getOiOutputTask.addCatch(markFailureTask, { resultPath: '$.error' }))
-      .next(deployTask.addCatch(markFailureTask, { resultPath: '$.error' }))
-      .next(markSuccessTask);
+      .next(checkOiSuccessChoice);
 
     this.buildStateMachine = new sfn.StateMachine(this, 'BuildStateMachine', {
       stateMachineName: `fable-${stage}-build-pipeline`,

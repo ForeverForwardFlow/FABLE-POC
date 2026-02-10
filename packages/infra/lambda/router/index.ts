@@ -78,11 +78,45 @@ export const handler: APIGatewayProxyHandler = async (event): Promise<APIGateway
           break;
 
         case 'BUILD':
-          // TODO: Invoke build Lambda when Step Functions is set up
+          // Invoke build-kickoff Lambda to start the build pipeline
           await sendToConnection(connectionId, {
             type: 'chat_chunk',
-            payload: { content: "Build functionality coming soon! For now, I can chat with you about what you'd like to build." },
+            payload: { content: `Starting build for: "${content}"...` },
           });
+
+          try {
+            const buildResponse = await lambdaClient.send(new InvokeCommand({
+              FunctionName: `fable-${STAGE}-build-kickoff`,
+              Payload: Buffer.from(JSON.stringify({
+                action: 'start',
+                payload: {
+                  request: content,
+                  userId: connection.userId,
+                  orgId: connection.orgId,
+                  connectionId,
+                },
+              })),
+            }));
+
+            const buildResult = buildResponse.Payload
+              ? JSON.parse(new TextDecoder().decode(buildResponse.Payload))
+              : null;
+
+            if (buildResult?.body) {
+              const body = JSON.parse(buildResult.body);
+              await sendToConnection(connectionId, {
+                type: 'chat_chunk',
+                payload: { content: `\n\nBuild started! Build ID: ${body.buildId}\n\nYou can monitor progress in the Builds tab.` },
+              });
+            }
+          } catch (buildError) {
+            console.error('Build kickoff error:', buildError);
+            await sendToConnection(connectionId, {
+              type: 'chat_chunk',
+              payload: { content: '\n\nFailed to start build. Please try again.' },
+            });
+          }
+
           await sendToConnection(connectionId, { type: 'chat_complete', messageId: crypto.randomUUID() });
           break;
 
@@ -202,6 +236,15 @@ Respond with: {"type": "CHAT|BUILD|USE_TOOL|MEMORY|CLARIFY", "confidence": 0.0-1
     }
   } catch (error) {
     console.error('Error classifying intent:', error);
+  }
+
+  // Fallback: Simple keyword-based classification when Bedrock fails
+  const lowerContent = content.toLowerCase();
+  if (/^(build|create|make)\s+(me\s+)?a?\s+/i.test(content)) {
+    return { type: 'BUILD', confidence: 0.8, reason: 'Keyword match: starts with build/create/make' };
+  }
+  if (lowerContent.includes('what do you remember') || lowerContent.includes('my memories')) {
+    return { type: 'MEMORY', confidence: 0.7, reason: 'Keyword match: memory query' };
   }
 
   // Default to CHAT if classification fails
