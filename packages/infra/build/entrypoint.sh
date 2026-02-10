@@ -84,7 +84,11 @@ setup_mcp_config() {
 
     # Write MCP server configuration
     # Using stdio transport - spawns sidecars as subprocesses
-    cat > ~/.claude.json << EOF
+    # NOTE: Playwright MCP is only added for OI phase (which may need browser verification)
+    # CORE and Worker phases never use Playwright. Including it for all phases caused
+    # silent hangs when npx @latest triggered npm registry checks in Fargate.
+    if [ "$PHASE" = "oi" ]; then
+        cat > ~/.claude.json << EOF
 {
   "mcpServers": {
     "memory": {
@@ -98,11 +102,28 @@ setup_mcp_config() {
     },
     "playwright": {
       "command": "npx",
-      "args": ["@playwright/mcp@latest"]
+      "args": ["@playwright/mcp"]
     }
   }
 }
 EOF
+    else
+        cat > ~/.claude.json << EOF
+{
+  "mcpServers": {
+    "memory": {
+      "command": "node",
+      "args": ["/fable/mcp-sidecar/dist/index.js"],
+      "env": {
+        "MEMORY_LAMBDA_URL": "$MEMORY_LAMBDA_URL",
+        "FABLE_BUILD_ID": "${FABLE_BUILD_ID:-unknown}",
+        "FABLE_ORG_ID": "${FABLE_ORG_ID:-00000000-0000-0000-0000-000000000001}"
+      }
+    }
+  }
+}
+EOF
+    fi
 
     # Write memory reflection hook for automated builds
     cat > ~/.claude/hooks/memory-reflection.sh << 'HOOKEOF'
@@ -254,12 +275,77 @@ fi
 echo "Running Claude with prompt: $PROMPT"
 echo ""
 
-# Run Claude Code (using -p for prompt)
-# Add --dangerously-skip-permissions to allow file writes without prompts
-claude -p "$PROMPT" --dangerously-skip-permissions 2>&1 || {
-    EXIT_CODE=$?
-    echo "Claude exited with code: $EXIT_CODE"
-}
+# Run Claude Code with hang detection
+# Claude should produce output within STARTUP_TIMEOUT seconds.
+# If it doesn't, MCP server initialization likely hung (known issue with npx registry checks).
+STARTUP_TIMEOUT=300  # 5 minutes
+CLAUDE_OUTPUT="/tmp/claude-output-$$"
+
+# Start Claude in background, capturing output to file
+claude -p "$PROMPT" --dangerously-skip-permissions > "$CLAUDE_OUTPUT" 2>&1 &
+CLAUDE_PID=$!
+
+# Stream output to CloudWatch in real-time
+tail -f "$CLAUDE_OUTPUT" 2>/dev/null &
+TAIL_PID=$!
+
+# Monitor for startup hang - check every 10 seconds
+ELAPSED=0
+HAS_OUTPUT=false
+while [ $ELAPSED -lt $STARTUP_TIMEOUT ]; do
+    # Check if Claude has exited (success or failure)
+    if ! kill -0 $CLAUDE_PID 2>/dev/null; then
+        HAS_OUTPUT=true
+        break
+    fi
+
+    # Check if any output has been produced
+    if [ -s "$CLAUDE_OUTPUT" ]; then
+        HAS_OUTPUT=true
+        break
+    fi
+
+    sleep 10
+    ELAPSED=$((ELAPSED + 10))
+    echo "  [watchdog] Waiting for Claude output... ${ELAPSED}s elapsed"
+done
+
+if [ "$HAS_OUTPUT" = "true" ]; then
+    # Claude is producing output or has exited - wait for completion
+    wait $CLAUDE_PID 2>/dev/null || {
+        EXIT_CODE=$?
+        echo "Claude exited with code: $EXIT_CODE"
+    }
+else
+    # Claude hung - no output after STARTUP_TIMEOUT
+    echo ""
+    echo "=== HANG DETECTED: Claude produced no output after ${STARTUP_TIMEOUT}s ==="
+    echo "Dumping diagnostics..."
+    echo ""
+    echo "--- Process tree ---"
+    ps auxf 2>/dev/null || ps aux
+    echo ""
+    echo "--- Memory usage ---"
+    free -m 2>/dev/null || cat /proc/meminfo 2>/dev/null || echo "Cannot read memory info"
+    echo ""
+    echo "--- MCP config ---"
+    cat ~/.claude.json 2>/dev/null || echo "No MCP config found"
+    echo ""
+
+    # Kill the hung process tree
+    echo "Killing hung Claude process (PID $CLAUDE_PID)..."
+    kill $CLAUDE_PID 2>/dev/null || true
+    sleep 2
+    kill -9 $CLAUDE_PID 2>/dev/null || true
+    wait $CLAUDE_PID 2>/dev/null || true
+
+    echo "Claude process terminated."
+fi
+
+# Stop the tail streamer
+kill $TAIL_PID 2>/dev/null || true
+wait $TAIL_PID 2>/dev/null || true
+rm -f "$CLAUDE_OUTPUT"
 
 # Check for output and upload to S3
 if [ -f ./output.json ]; then
