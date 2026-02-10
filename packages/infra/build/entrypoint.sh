@@ -84,30 +84,12 @@ setup_mcp_config() {
 
     # Write MCP server configuration
     # Using stdio transport - spawns sidecars as subprocesses
-    # Playwright MCP only for OI phase (browser verification for frontend builds).
-    # Removed @latest to avoid npm registry checks that could slow startup.
-    if [ "$PHASE" = "oi" ]; then
-        cat > ~/.claude.json << EOF
-{
-  "mcpServers": {
-    "memory": {
-      "command": "node",
-      "args": ["/fable/mcp-sidecar/dist/index.js"],
-      "env": {
-        "MEMORY_LAMBDA_URL": "$MEMORY_LAMBDA_URL",
-        "FABLE_BUILD_ID": "${FABLE_BUILD_ID:-unknown}",
-        "FABLE_ORG_ID": "${FABLE_ORG_ID:-00000000-0000-0000-0000-000000000001}"
-      }
-    },
-    "playwright": {
-      "command": "npx",
-      "args": ["@playwright/mcp"]
-    }
-  }
-}
-EOF
-    else
-        cat > ~/.claude.json << EOF
+    # Playwright MCP disabled: its tool definitions (~50+ tools) are sent with
+    # every Bedrock API call, adding massive token overhead. OI without Playwright
+    # completes in ~13min; with Playwright it takes 48+ min or hangs.
+    # TODO: Re-enable as a focused "browser verification" step at end of OI,
+    # not as an always-on MCP server.
+    cat > ~/.claude.json << EOF
 {
   "mcpServers": {
     "memory": {
@@ -122,7 +104,6 @@ EOF
   }
 }
 EOF
-    fi
 
     # Write memory reflection hook for automated builds
     cat > ~/.claude/hooks/memory-reflection.sh << 'HOOKEOF'
