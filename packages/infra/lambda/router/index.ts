@@ -58,8 +58,18 @@ export const handler: APIGatewayProxyHandler = async (event): Promise<APIGateway
       // Load conversation context
       const context = await loadConversationContext(connection.userId, message.payload.conversationId);
 
-      // Classify intent
-      const intent = await classifyIntent(content, context);
+      // Classify intent with hard overrides for known patterns
+      // Priority: "build me" > workflow keyword > Bedrock classification
+      let intent: Intent;
+      if (/^build\s+me\b/i.test(content)) {
+        // Explicit "build me" requests are always BUILD — Haiku often misclassifies these as CHAT
+        intent = { type: 'BUILD', confidence: 1.0, reason: 'explicit build request' };
+      } else if (/\bworkflow\b/i.test(content)) {
+        // Workflow management is always CHAT — handled by internal fable_* tools
+        intent = { type: 'CHAT', confidence: 1.0, reason: 'workflow management' };
+      } else {
+        intent = await classifyIntent(content, context);
+      }
       console.log(`Intent classified: ${intent.type} (${intent.confidence})`);
 
       // Route to appropriate handler
@@ -206,11 +216,13 @@ async function classifyIntent(content: string, context: unknown): Promise<Intent
 User message: "${content}"
 
 Intent types:
-- CHAT: General conversation, questions, explanations
-- BUILD: Request to create/build something new (e.g., "build me a calculator", "create a weather tool")
+- CHAT: General conversation, questions, explanations, AND managing workflows. Any message mentioning "workflow" is ALWAYS CHAT, never BUILD. Examples: "create a workflow", "list my workflows", "run my daily report workflow", "pause the backup workflow", "show workflow history"
+- BUILD: Request to build a new software tool/function (e.g., "build me a calculator", "create a weather tool"). NOT for workflows — workflows are CHAT.
 - USE_TOOL: Use an existing tool (e.g., "calculate 20% of $50")
 - MEMORY: Query or manage memories (e.g., "what do you remember about me?")
 - CLARIFY: Ambiguous, needs clarification
+
+IMPORTANT: If the message contains the word "workflow", classify as CHAT.
 
 Respond with: {"type": "CHAT|BUILD|USE_TOOL|MEMORY|CLARIFY", "confidence": 0.0-1.0, "reason": "brief explanation"}`;
 

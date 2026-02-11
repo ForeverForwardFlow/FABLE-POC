@@ -6,6 +6,48 @@ You are the Manager. You take specifications and deliver working implementations
 
 ---
 
+## ⚠️ CHECK FOR QA FEEDBACK — DO THIS BEFORE STEP 1
+
+**Before doing ANYTHING else**, check if this is a retry build:
+
+```bash
+# Check for QA feedback in build-spec.json OR in requirements.md
+grep -l "QA-FIX REQUIRED\|qaFeedback\|mustFix\|QA FEEDBACK" build-spec.json requirements.md 2>/dev/null
+```
+
+### If QA feedback exists — this is a RETRY build:
+
+CORE has already converted QA mustFix items into `[QA-FIX REQUIRED]` acceptance criteria in `requirements.md`, and included a `QA FEEDBACK FROM PREVIOUS ATTEMPT` section in your CLAUDE.md.
+
+**You MUST:**
+
+1. **Read the QA feedback section** in your CLAUDE.md or requirements.md
+2. **Extract every `[QA-FIX REQUIRED]` criterion** — these are NON-NEGOTIABLE
+3. **When writing worker CLAUDE.md files, include this section at the TOP (before the task description):**
+
+```markdown
+## 🚨 QA FIXES REQUIRED (NON-NEGOTIABLE)
+
+The previous build attempt was tested by QA and REJECTED. The following issues MUST be fixed in this implementation. If you skip any of these, the build will fail QA again.
+
+{paste each [QA-FIX REQUIRED] item as a numbered list}
+
+You MUST verify each fix is implemented before completing your task.
+```
+
+4. **After workers complete, verify EACH QA-FIX item is addressed:**
+```bash
+# For each mustFix item, grep the source code to confirm it was implemented
+# Example: if mustFix says "add longestWord field", verify:
+grep -r "longestWord" /tmp/worker-*/src/ || echo "FAIL: longestWord not implemented"
+```
+
+5. **If any QA-FIX item is NOT addressed after worker completion:**
+   - Spawn a targeted fix worker for that specific item
+   - Do NOT complete until all QA-FIX items are verified
+
+**CRITICAL:** The #1 cause of failed retry builds is OI not passing QA feedback to workers. If workers don't know what QA found wrong, they'll make the same mistakes.
+
 ## ⚠️ CRITICAL FIRST STEP: Check for Existing Tools
 
 **BEFORE DOING ANYTHING ELSE**, you MUST check if the tool already exists in GitHub. This determines whether you're EXTENDING existing code or CREATING new code.
@@ -237,21 +279,25 @@ Look for:
 
 ## Your Job (Full Sequence)
 
-1. **Check for existing tools** — Clone GitHub repo, determine EXTENSION vs CREATE mode
-2. **Initialize** — Generate process ID, add self to graph, start logging
-3. **Read existing code** (if EXTENSION mode) — Load /tmp/existing-source.ts and /tmp/existing-tests.ts
-4. Break spec into discrete tasks (spatial decomposition — each worker owns distinct files)
-5. Respect interface contracts from CORE's spec
-6. **Plan workers in graph** — Add worker Process nodes and `owns` edges before spawning
-7. Create worktrees and task-specific CLAUDE.md for each worker (include your ID as parent)
+1. **Check for QA feedback** — Read requirements.md and CLAUDE.md for `[QA-FIX REQUIRED]` items and `QA FEEDBACK` sections. Save these for step 7.
+2. **Check for existing tools** — Clone GitHub repo, determine EXTENSION vs CREATE mode
+3. **Initialize** — Generate process ID, add self to graph, start logging
+4. **Read existing code** (if EXTENSION mode) — Load /tmp/existing-source.ts and /tmp/existing-tests.ts
+5. Break spec into discrete tasks (spatial decomposition — each worker owns distinct files)
+6. Respect interface contracts from CORE's spec
+7. **Plan workers in graph** — Add worker Process nodes and `owns` edges before spawning
+8. Create worktrees and task-specific CLAUDE.md for each worker (include your ID as parent)
    - **For EXTENSION mode:** Include existing source AND tests in worker CLAUDE.md
-8. Spawn workers (parallel if independent, sequential if dependent)
-9. Monitor workers, collect their logs when complete
-10. **Update graph from logs** — Add File nodes, `implements` edges, `tests` edges based on worker logs
-11. **Merge logs** — Combine all worker logs into `.fable/timeline.jsonl`
-12. Integrate results, run final verification
-13. **Add verification edges** — Record build/test/lint results in graph
-14. Log verification results, iterate if needed
+   - **For RETRY builds:** Include the `🚨 QA FIXES REQUIRED` section at the TOP of each worker CLAUDE.md (see above)
+9. Spawn workers (parallel if independent, sequential if dependent)
+10. Monitor workers, collect their logs when complete
+11. **Verify QA fixes** (retry builds only) — Check that each `[QA-FIX REQUIRED]` item is addressed in worker output. If not, spawn targeted fix workers.
+12. **Update graph from logs** — Add File nodes, `implements` edges, `tests` edges based on worker logs
+13. **Merge logs** — Combine all worker logs into `.fable/timeline.jsonl`
+14. Integrate results, run final verification
+15. **Package Lambda artifacts** — For each tool, zip `dist/index.js` and upload to S3 (see "Package Lambda Artifacts for Deployment" section)
+16. **Add verification edges** — Record build/test/lint results in graph
+17. Log verification results, iterate if needed
 
 ## Logging
 
@@ -659,6 +705,11 @@ cat > tools/$TOOL_NAME/package.json << EOF
     "jest": "^29.7.0",
     "ts-jest": "^29.1.0",
     "typescript": "^5.0.0"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "testMatch": ["**/__tests__/**/*.test.ts"]
   }
 }
 EOF
@@ -732,9 +783,33 @@ COMMIT_SHA=$(git rev-parse HEAD)
 echo "Pushed to $FABLE_GITHUB_REPO at commit $COMMIT_SHA"
 ```
 
-### 5. Include Deployment Info in Output
+### 5. Package Lambda Artifacts for Deployment
 
-When writing `output.json`, include git-based deployment info:
+**CRITICAL:** The Deploy Lambda needs a zipped build artifact on S3. You MUST package each tool's `dist/index.js` as a zip and upload it.
+
+```bash
+# For EACH Lambda tool, after the final build verification:
+TOOL_NAME="{tool-name}"
+ARTIFACTS_BUCKET="${ARTIFACTS_BUCKET:-fable-artifacts-dev-767398133785}"
+
+cd /tmp/fable-tools/tools/$TOOL_NAME
+
+# Ensure dist/ exists from the build step
+ls dist/index.js || (npm install && npm run build)
+
+# Create a zip with index.js at the root (Lambda handler expects this)
+cd dist
+zip /tmp/${TOOL_NAME}-lambda.zip index.js
+cd -
+
+# Upload to S3
+aws s3 cp /tmp/${TOOL_NAME}-lambda.zip "s3://${ARTIFACTS_BUCKET}/tools/${TOOL_NAME}/lambda.zip"
+echo "Uploaded Lambda artifact to s3://${ARTIFACTS_BUCKET}/tools/${TOOL_NAME}/lambda.zip"
+```
+
+### 6. Include Deployment Info in Output
+
+When writing `output.json`, include git-based deployment info AND `s3Key` for each tool:
 
 **For Lambda tool builds:**
 ```json
@@ -749,6 +824,7 @@ When writing `output.json`, include git-based deployment info:
   "tools": [
     {
       "toolName": "add-numbers",
+      "s3Key": "tools/add-numbers/lambda.zip",
       "description": "Adds two numbers together",
       "gitPath": "tools/add-numbers",
       "handler": "index.handler",

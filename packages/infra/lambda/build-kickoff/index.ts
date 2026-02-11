@@ -102,6 +102,9 @@ async function startBuild(request: BuildRequest): Promise<{ statusCode: number; 
     }),
   }));
 
+  // Note: iteration tracking (iteration, maxIterations) is initialized by
+  // the InitBuild Pass state in Step Functions, not here.
+
   console.log(`Build started: ${buildId}, execution: ${executionName}`);
 
   return {

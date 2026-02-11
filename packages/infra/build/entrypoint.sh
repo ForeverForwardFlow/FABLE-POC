@@ -184,6 +184,15 @@ fi
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
 
+# Handle S3-based buildSpec (used for enriched retry specs from QA feedback loop)
+if [[ "$BUILD_SPEC" == s3://* ]]; then
+    echo "=== Downloading enriched build spec from S3 ==="
+    echo "Source: $BUILD_SPEC"
+    aws s3 cp "$BUILD_SPEC" ./build-spec.json
+    BUILD_SPEC=$(cat ./build-spec.json)
+    echo "Downloaded enriched spec (iteration $(echo "$BUILD_SPEC" | jq -r '.iteration // 1'))"
+fi
+
 # Copy MCP config to work directory
 copy_mcp_config_to_workdir
 
@@ -211,9 +220,14 @@ case "$PHASE" in
         echo ""
         echo "=== Running FABLE-Worker ==="
         ;;
+    qa)
+        cp /fable/templates/CLAUDE.md.qa ./CLAUDE.md
+        echo ""
+        echo "=== Running FABLE-QA ==="
+        ;;
     *)
         echo "ERROR: Unknown phase: $PHASE"
-        echo "Valid phases: core, oi, worker"
+        echo "Valid phases: core, oi, worker, qa"
         exit 1
         ;;
 esac
@@ -279,6 +293,9 @@ if [ -f ./output.json ]; then
         echo "Bucket: $ARTIFACTS_BUCKET"
         echo "Key: $S3_KEY"
         aws s3 cp ./output.json "s3://${ARTIFACTS_BUCKET}/${S3_KEY}"
+        # Also save iteration-stamped copy for debugging (won't overwrite on retry)
+        ITER=$(echo "$BUILD_SPEC" | jq -r '.iteration // 1' 2>/dev/null || echo "1")
+        aws s3 cp ./output.json "s3://${ARTIFACTS_BUCKET}/builds/${FABLE_BUILD_ID}/${PHASE}-output-iter${ITER}.json" 2>/dev/null || true
         echo "Upload complete"
     else
         echo "WARNING: ARTIFACTS_BUCKET or FABLE_BUILD_ID not set, skipping S3 upload"

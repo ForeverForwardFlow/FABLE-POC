@@ -30,6 +30,7 @@ export class FableStack extends cdk.Stack {
   public readonly conversationsTable: dynamodb.Table;
   public readonly buildsTable: dynamodb.Table;
   public readonly toolsTable: dynamodb.Table;
+  public readonly workflowsTable: dynamodb.Table;
   public readonly artifactsBucket: s3.Bucket;
   public readonly webSocketApi: apigatewayv2.WebSocketApi;
   public readonly buildRepository: ecr.Repository;
@@ -179,6 +180,23 @@ export class FableStack extends cdk.Stack {
       sortKey: { name: 'GSI1SK', type: dynamodb.AttributeType.STRING },
     });
 
+    // Workflows table (workflow definitions + execution records)
+    this.workflowsTable = new dynamodb.Table(this, 'WorkflowsTable', {
+      tableName: `fable-${stage}-workflows`,
+      partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'ttl',
+      removalPolicy: stage === 'prod' ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+    });
+
+    // GSI for querying workflows/executions by user or org
+    this.workflowsTable.addGlobalSecondaryIndex({
+      indexName: 'GSI1',
+      partitionKey: { name: 'GSI1PK', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'GSI1SK', type: dynamodb.AttributeType.STRING },
+    });
+
     // ============================================================
     // S3 Bucket for artifacts
     // ============================================================
@@ -261,6 +279,7 @@ export class FableStack extends cdk.Stack {
       CONVERSATIONS_TABLE: this.conversationsTable.tableName,
       BUILDS_TABLE: this.buildsTable.tableName,
       TOOLS_TABLE: this.toolsTable.tableName,
+      WORKFLOWS_TABLE: this.workflowsTable.tableName,
       ARTIFACTS_BUCKET: this.artifactsBucket.bucketName,
       AURORA_SECRET_ARN: dbCredentials.secretArn,
       AURORA_CLUSTER_ARN: this.auroraCluster.clusterArn,
@@ -337,6 +356,36 @@ export class FableStack extends cdk.Stack {
       },
     });
 
+    // Workflow Executor Lambda (headless Bedrock tool-use loop for scheduled/manual workflows)
+    const workflowExecutorFn = new lambdaNodejs.NodejsFunction(this, 'WorkflowExecutorFn', {
+      functionName: `fable-${stage}-workflow-executor`,
+      entry: path.join(__dirname, '../lambda/workflow-executor/index.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      environment: lambdaEnvironment,
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 1024,
+      vpc: this.vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      securityGroups: [lambdaSecurityGroup],
+      logRetention: logs.RetentionDays.ONE_WEEK,
+      bundling: {
+        minify: true,
+        sourceMap: true,
+        target: 'node20',
+        format: lambdaNodejs.OutputFormat.CJS,
+        nodeModules: ['@smithy/signature-v4', '@aws-crypto/sha256-js'],
+      },
+    });
+
+    // IAM Role for EventBridge Scheduler to invoke workflow-executor
+    const schedulerRole = new iam.Role(this, 'WorkflowSchedulerRole', {
+      roleName: `fable-${stage}-workflow-scheduler-role`,
+      assumedBy: new iam.ServicePrincipal('scheduler.amazonaws.com'),
+      description: 'Role for EventBridge Scheduler to invoke workflow-executor Lambda',
+    });
+    workflowExecutorFn.grantInvoke(schedulerRole);
+
     // Grant permissions
     this.connectionsTable.grantReadWriteData(connectionManagerFn);
     this.connectionsTable.grantReadWriteData(routerFn);
@@ -344,8 +393,56 @@ export class FableStack extends cdk.Stack {
     this.conversationsTable.grantReadWriteData(routerFn);
     this.conversationsTable.grantReadWriteData(chatFn);
     this.toolsTable.grantReadData(chatFn); // Chat needs to discover tools
+    this.workflowsTable.grantReadWriteData(chatFn); // Chat manages workflows
     dbCredentials.grantRead(chatFn);
     this.artifactsBucket.grantReadWrite(chatFn);
+
+    // Workflow executor permissions
+    this.workflowsTable.grantReadWriteData(workflowExecutorFn);
+    this.toolsTable.grantReadData(workflowExecutorFn); // Discover tools
+    this.connectionsTable.grantReadData(workflowExecutorFn); // WebSocket notifications
+    dbCredentials.grantRead(workflowExecutorFn);
+
+    // Bedrock permissions for Workflow Executor
+    workflowExecutorFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'bedrock:InvokeModel',
+        'bedrock:InvokeModelWithResponseStream',
+      ],
+      resources: ['*'],
+    }));
+
+    // Workflow executor needs to invoke deployed tools via Function URL
+    workflowExecutorFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['lambda:InvokeFunctionUrl'],
+      resources: [`arn:aws:lambda:${this.region}:${this.account}:function:fable-${stage}-tool-*`],
+    }));
+
+    // Chat Lambda can invoke workflow-executor (for manual runs)
+    workflowExecutorFn.grantInvoke(chatFn);
+    chatFn.addEnvironment('WORKFLOW_EXECUTOR_ARN', workflowExecutorFn.functionArn);
+
+    // Chat Lambda manages EventBridge schedules for cron workflows
+    chatFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'scheduler:CreateSchedule',
+        'scheduler:UpdateSchedule',
+        'scheduler:DeleteSchedule',
+        'scheduler:GetSchedule',
+      ],
+      resources: [`arn:aws:scheduler:${this.region}:${this.account}:schedule/default/fable-${stage}-wf-*`],
+    }));
+
+    // Chat Lambda passes scheduler role when creating schedules
+    chatFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['iam:PassRole'],
+      resources: [schedulerRole.roleArn],
+    }));
+    chatFn.addEnvironment('SCHEDULER_ROLE_ARN', schedulerRole.roleArn);
 
     // Router needs to invoke Chat Lambda
     chatFn.grantInvoke(routerFn);
@@ -479,6 +576,7 @@ export class FableStack extends cdk.Stack {
         TOOLS_TABLE: this.toolsTable.tableName,
         ARTIFACTS_BUCKET: this.artifactsBucket.bucketName,
         TOOL_ROLE_ARN: toolExecutionRole.roleArn,
+        GITHUB_SECRET_ARN: githubSecret.secretArn,
       },
       timeout: cdk.Duration.seconds(60),
       memorySize: 256,
@@ -517,9 +615,10 @@ export class FableStack extends cdk.Stack {
       resources: [toolExecutionRole.roleArn],
     }));
 
-    // Grant Tool Deployer access to tools table and artifacts bucket
+    // Grant Tool Deployer access to tools table, artifacts bucket, and GitHub secret
     this.toolsTable.grantReadWriteData(toolDeployerFn);
     this.artifactsBucket.grantRead(toolDeployerFn);
+    githubSecret.grantRead(toolDeployerFn);
 
     // Grant FABLE Lambdas permission to invoke deployed tools via Function URL
     const invokeToolsPolicy = new iam.PolicyStatement({
@@ -688,8 +787,8 @@ export class FableStack extends cdk.Stack {
     // Build Task Definition (Fargate)
     const buildTaskDefinition = new ecs.FargateTaskDefinition(this, 'BuildTaskDefinition', {
       family: `fable-${stage}-build`,
-      cpu: 2048,  // 2 vCPU
-      memoryLimitMiB: 8192,  // 8 GB - Claude Code OI needs significant memory
+      cpu: 4096,  // 4 vCPU
+      memoryLimitMiB: 16384,  // 16 GB - OI spawns worker claude processes that multiply memory
       taskRole: buildTaskRole,
       executionRole: buildTaskExecutionRole,
     });
@@ -719,6 +818,129 @@ export class FableStack extends cdk.Stack {
 
     // Grant build task access to GitHub credentials
     githubSecret.grantRead(buildTaskRole);
+
+    // ============================================================
+    // EC2 QA Station (persistent VM for Claude Code QA)
+    // ============================================================
+
+    // Security group: all outbound, no inbound (SSM handles access)
+    const qaSecurityGroup = new ec2.SecurityGroup(this, 'QASecurityGroup', {
+      vpc: this.vpc,
+      description: 'Security group for QA Station - SSM access only',
+      allowAllOutbound: true,
+    });
+
+    // IAM Role for QA Station EC2 instance
+    const qaInstanceRole = new iam.Role(this, 'QAInstanceRole', {
+      roleName: `fable-${stage}-qa-instance-role`,
+      assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
+      managedPolicies: [
+        // SSM core for remote command execution
+        iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
+      ],
+    });
+
+    // Bedrock access for Claude Code on QA station
+    qaInstanceRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'bedrock:InvokeModel',
+        'bedrock:InvokeModelWithResponseStream',
+        'bedrock:ListInferenceProfiles',
+      ],
+      resources: ['*'],
+    }));
+
+    // S3 access (read QA input, write QA output, read templates)
+    this.artifactsBucket.grantReadWrite(qaInstanceRole);
+
+    // DynamoDB read (check tools table for deployed tool info)
+    this.toolsTable.grantReadData(qaInstanceRole);
+
+    // Lambda invoke (call deployed tool Function URLs for testing)
+    qaInstanceRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['lambda:InvokeFunctionUrl', 'lambda:GetFunctionUrlConfig'],
+      resources: [`arn:aws:lambda:${this.region}:${this.account}:function:fable-${stage}-tool-*`],
+    }));
+
+    // Secrets Manager read (GitHub token for repo cloning)
+    githubSecret.grantRead(qaInstanceRole);
+
+    // QA EC2 Instance
+    const qaInstance = new ec2.Instance(this, 'QAStation', {
+      instanceName: `fable-${stage}-qa-station`,
+      instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MEDIUM),
+      machineImage: ec2.MachineImage.latestAmazonLinux2023(),
+      vpc: this.vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      securityGroup: qaSecurityGroup,
+      role: qaInstanceRole,
+      blockDevices: [{
+        deviceName: '/dev/xvda',
+        volume: ec2.BlockDeviceVolume.ebs(30, {
+          volumeType: ec2.EbsDeviceVolumeType.GP3,
+          encrypted: true,
+        }),
+      }],
+      userData: ec2.UserData.custom(this.getQAUserDataScript(stage)),
+    });
+
+    // Tag for cost tracking
+    cdk.Tags.of(qaInstance).add('Purpose', 'fable-qa-station');
+    cdk.Tags.of(qaInstance).add('AutoStop', 'true');
+
+    // QA Orchestrator Lambda (bridges Step Functions to EC2 QA Station)
+    const qaOrchestratorFn = new lambdaNodejs.NodejsFunction(this, 'QAOrchestratorFn', {
+      functionName: `fable-${stage}-qa-orchestrator`,
+      entry: path.join(__dirname, '../lambda/qa-orchestrator/index.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      environment: {
+        QA_INSTANCE_ID: qaInstance.instanceId,
+        ARTIFACTS_BUCKET: this.artifactsBucket.bucketName,
+        GITHUB_SECRET_ARN: githubSecret.secretArn,
+        STAGE: stage,
+      },
+      timeout: cdk.Duration.minutes(15), // Long timeout for EC2 boot + QA run
+      memorySize: 256,
+      logRetention: logs.RetentionDays.ONE_WEEK,
+      bundling: bundlingOptions,
+    });
+
+    // QA Orchestrator needs SSM permissions
+    qaOrchestratorFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['ssm:SendCommand', 'ssm:GetCommandInvocation'],
+      resources: ['*'],
+    }));
+
+    // QA Orchestrator needs EC2 permissions (start instance, check status)
+    qaOrchestratorFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['ec2:DescribeInstanceStatus', 'ec2:StartInstances'],
+      resources: ['*'],
+    }));
+
+    // QA Orchestrator writes QA input to S3
+    this.artifactsBucket.grantReadWrite(qaOrchestratorFn);
+
+    // Enrich Build Spec Lambda (injects QA feedback for retries)
+    const enrichBuildSpecFn = new lambdaNodejs.NodejsFunction(this, 'EnrichBuildSpecFn', {
+      functionName: `fable-${stage}-enrich-build-spec`,
+      entry: path.join(__dirname, '../lambda/enrich-build-spec/index.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      environment: {
+        ARTIFACTS_BUCKET: this.artifactsBucket.bucketName,
+      },
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 256,
+      logRetention: logs.RetentionDays.ONE_WEEK,
+      bundling: bundlingOptions,
+    });
+
+    this.artifactsBucket.grantReadWrite(enrichBuildSpecFn);
 
     // Build Kickoff Lambda (starts Step Functions execution)
     const buildKickoffFn = new lambdaNodejs.NodejsFunction(this, 'BuildKickoffFn', {
@@ -757,7 +979,56 @@ export class FableStack extends cdk.Stack {
 
     this.artifactsBucket.grantRead(getTaskOutputFn);
 
+    // ============================================================
     // Step Functions State Machine for Build Orchestration
+    // Flow: InitBuild -> CoreTask -> OI -> QA -> (pass) Deploy -> Success
+    //                                       -> (fail) EnrichBuildSpec -> CheckMaxIterations -> CoreTask (loop)
+    // ============================================================
+
+    // Update build status Lambda
+    const updateBuildStatusFn = new lambdaNodejs.NodejsFunction(this, 'UpdateBuildStatusFn', {
+      functionName: `fable-${stage}-update-build-status`,
+      entry: path.join(__dirname, '../lambda/update-build-status/index.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      environment: {
+        BUILDS_TABLE: this.buildsTable.tableName,
+      },
+      timeout: cdk.Duration.seconds(10),
+      memorySize: 256,
+      logRetention: logs.RetentionDays.ONE_WEEK,
+      bundling: bundlingOptions,
+    });
+    this.buildsTable.grantReadWriteData(updateBuildStatusFn);
+
+    // Terminal states
+    const markSuccessTask = new tasks.LambdaInvoke(this, 'MarkSuccessTask', {
+      lambdaFunction: updateBuildStatusFn,
+      payload: sfn.TaskInput.fromObject({
+        buildId: sfn.JsonPath.stringAt('$.buildId'),
+        status: 'completed',
+        result: sfn.JsonPath.objectAt('$.deployResult.Payload'),
+      }),
+    });
+
+    const markFailureTask = new tasks.LambdaInvoke(this, 'MarkFailureTask', {
+      lambdaFunction: updateBuildStatusFn,
+      payload: sfn.TaskInput.fromObject({
+        buildId: sfn.JsonPath.stringAt('$.buildId'),
+        status: 'failed',
+        error: sfn.JsonPath.stringAt('$.error'),
+      }),
+    });
+
+    // InitBuild: Set iteration tracking fields
+    const initBuild = new sfn.Pass(this, 'InitBuild', {
+      resultPath: '$.iterationState',
+      result: sfn.Result.fromObject({
+        iteration: 1,
+        maxIterations: 3,
+      }),
+    });
+
     // CORE phase: One-shot decomposition
     const coreTask = new tasks.EcsRunTask(this, 'CoreTask', {
       integrationPattern: sfn.IntegrationPattern.RUN_JOB,
@@ -778,7 +1049,7 @@ export class FableStack extends cdk.Stack {
       resultPath: '$.coreTaskResult',
     });
 
-    // Retrieve CORE output from S3 - pass entire output to OI
+    // Retrieve CORE output from S3
     const getCoreOutputTask = new tasks.LambdaInvoke(this, 'GetCoreOutputTask', {
       lambdaFunction: getTaskOutputFn,
       payload: sfn.TaskInput.fromObject({
@@ -791,8 +1062,7 @@ export class FableStack extends cdk.Stack {
       resultPath: '$.coreOutput',
     });
 
-    // OI phase: Orchestration + Workers (single container)
-    // Pass the full CORE output as a JSON string
+    // OI phase: Orchestration + Workers
     const oiTask = new tasks.EcsRunTask(this, 'OiTask', {
       integrationPattern: sfn.IntegrationPattern.RUN_JOB,
       cluster: this.buildCluster,
@@ -812,7 +1082,7 @@ export class FableStack extends cdk.Stack {
       resultPath: '$.oiTaskResult',
     });
 
-    // Retrieve OI output from S3 - pass entire output
+    // Retrieve OI output from S3
     const getOiOutputTask = new tasks.LambdaInvoke(this, 'GetOiOutputTask', {
       lambdaFunction: getTaskOutputFn,
       payload: sfn.TaskInput.fromObject({
@@ -825,8 +1095,34 @@ export class FableStack extends cdk.Stack {
       resultPath: '$.oiOutput',
     });
 
+    // QA phase: Invoke QA Orchestrator Lambda (EC2 via SSM)
+    const qaTask = new tasks.LambdaInvoke(this, 'QATask', {
+      lambdaFunction: qaOrchestratorFn,
+      payload: sfn.TaskInput.fromObject({
+        buildId: sfn.JsonPath.stringAt('$.buildId'),
+        buildSpec: sfn.JsonPath.stringAt('$.buildSpec'),
+        oiOutput: sfn.JsonPath.objectAt('$.oiOutput.output'),
+        iteration: sfn.JsonPath.numberAt('$.iterationState.iteration'),
+        userId: sfn.JsonPath.stringAt('$.userId'),
+        orgId: sfn.JsonPath.stringAt('$.orgId'),
+      }),
+      resultPath: '$.qaResult',
+    });
+
+    // Retrieve QA output from S3
+    const getQaOutputTask = new tasks.LambdaInvoke(this, 'GetQAOutputTask', {
+      lambdaFunction: getTaskOutputFn,
+      payload: sfn.TaskInput.fromObject({
+        buildId: sfn.JsonPath.stringAt('$.buildId'),
+        phase: 'qa',
+      }),
+      resultSelector: {
+        'output.$': '$.Payload',
+      },
+      resultPath: '$.qaOutput',
+    });
+
     // Deploy phase: Invoke Tool Deployer Lambda
-    // For PoC: uses tool_specification from OI output
     const deployTask = new tasks.LambdaInvoke(this, 'DeployTask', {
       lambdaFunction: toolDeployerFn,
       payload: sfn.TaskInput.fromObject({
@@ -841,46 +1137,38 @@ export class FableStack extends cdk.Stack {
       resultPath: '$.deployResult',
     });
 
-    // Update build status Lambda
-    const updateBuildStatusFn = new lambdaNodejs.NodejsFunction(this, 'UpdateBuildStatusFn', {
-      functionName: `fable-${stage}-update-build-status`,
-      entry: path.join(__dirname, '../lambda/update-build-status/index.ts'),
-      handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      environment: {
-        BUILDS_TABLE: this.buildsTable.tableName,
+    // Enrich build spec with QA feedback for retry
+    const enrichBuildSpecTask = new tasks.LambdaInvoke(this, 'EnrichBuildSpecTask', {
+      lambdaFunction: enrichBuildSpecFn,
+      payload: sfn.TaskInput.fromObject({
+        buildId: sfn.JsonPath.stringAt('$.buildId'),
+        buildSpec: sfn.JsonPath.stringAt('$.buildSpec'),
+        qaReport: sfn.JsonPath.objectAt('$.qaOutput.output'),
+        iteration: sfn.JsonPath.numberAt('$.iterationState.iteration'),
+      }),
+      resultSelector: {
+        'enrichedSpecKey.$': '$.Payload.enrichedSpecKey',
+        'iteration.$': '$.Payload.iteration',
       },
-      timeout: cdk.Duration.seconds(10),
-      memorySize: 256,
-      logRetention: logs.RetentionDays.ONE_WEEK,
-      bundling: bundlingOptions,
-    });
-    this.buildsTable.grantReadWriteData(updateBuildStatusFn);
-
-    // Success handler - include deploy result
-    const markSuccessTask = new tasks.LambdaInvoke(this, 'MarkSuccessTask', {
-      lambdaFunction: updateBuildStatusFn,
-      payload: sfn.TaskInput.fromObject({
-        buildId: sfn.JsonPath.stringAt('$.buildId'),
-        status: 'completed',
-        result: sfn.JsonPath.objectAt('$.deployResult.Payload'),
-      }),
+      resultPath: '$.enrichResult',
     });
 
-    // Failure handler
-    const markFailureTask = new tasks.LambdaInvoke(this, 'MarkFailureTask', {
-      lambdaFunction: updateBuildStatusFn,
-      payload: sfn.TaskInput.fromObject({
-        buildId: sfn.JsonPath.stringAt('$.buildId'),
-        status: 'failed',
-        error: sfn.JsonPath.stringAt('$.error'),
-      }),
+    // Increment iteration: reset state for retry loop back to CORE
+    // Only forward fields that exist in the original input (no conversationId)
+    const incrementIteration = new sfn.Pass(this, 'IncrementIteration', {
+      parameters: {
+        'buildId.$': '$.buildId',
+        'buildSpec.$': '$.enrichResult.enrichedSpecKey',
+        'userId.$': '$.userId',
+        'orgId.$': '$.orgId',
+        'iterationState': {
+          'iteration.$': '$.enrichResult.iteration',
+          'maxIterations': 3,
+        },
+      },
     });
 
-    // Build the state machine definition
-    // Flow: CoreTask -> GetCoreOutput -> CheckCoreSuccess -> OiTask -> GetOiOutput -> CheckOiSuccess -> Deploy -> MarkSuccess
-
-    // Pass state to format OI error for markFailureTask
+    // Error formatters
     const formatOiError = new sfn.Pass(this, 'FormatOiError', {
       parameters: {
         'buildId.$': '$.buildId',
@@ -889,27 +1177,95 @@ export class FableStack extends cdk.Stack {
     });
     formatOiError.next(markFailureTask);
 
-    // Check if OI phase succeeded
-    // OI output uses "status": "success" (string), not "success": true (boolean)
-    // Also handle case where status field is missing (no output.json produced)
-    const checkOiSuccessChoice = new sfn.Choice(this, 'CheckOiSuccess')
+    const formatDeployError = new sfn.Pass(this, 'FormatDeployError', {
+      parameters: {
+        'buildId.$': '$.buildId',
+        'error.$': '$.deployResult.Payload.body',
+      },
+    });
+    formatDeployError.next(markFailureTask);
+
+    const formatQAExhaustedError = new sfn.Pass(this, 'FormatQAExhaustedError', {
+      parameters: {
+        'buildId.$': '$.buildId',
+        'error': 'QA failed after maximum iterations',
+      },
+    });
+    formatQAExhaustedError.next(markFailureTask);
+
+    // Check deploy success
+    const checkDeploySuccess = new sfn.Choice(this, 'CheckDeploySuccess')
       .when(
-        sfn.Condition.stringEquals('$.oiOutput.output.status', 'success'),
-        deployTask.addCatch(markFailureTask, { resultPath: '$.error' }).next(markSuccessTask)
+        sfn.Condition.and(
+          sfn.Condition.isPresent('$.deployResult.Payload.statusCode'),
+          sfn.Condition.numberEquals('$.deployResult.Payload.statusCode', 200),
+        ),
+        markSuccessTask
+      )
+      .otherwise(formatDeployError);
+
+    // Check max iterations for retry loop
+    const checkMaxIterations = new sfn.Choice(this, 'CheckMaxIterations')
+      .when(
+        sfn.Condition.numberGreaterThan('$.enrichResult.iteration', 3),
+        formatQAExhaustedError
+      )
+      .otherwise(incrementIteration);
+
+    // Check QA success - route to deploy or feedback loop
+    // Guard with isPresent to avoid States.Runtime crash if QA output is malformed
+    const checkQASuccess = new sfn.Choice(this, 'CheckQASuccess')
+      .when(
+        sfn.Condition.and(
+          sfn.Condition.isPresent('$.qaOutput.output.status'),
+          sfn.Condition.stringEquals('$.qaOutput.output.status', 'pass'),
+        ),
+        deployTask.addCatch(markFailureTask, { resultPath: '$.error' }).next(checkDeploySuccess)
+      )
+      .otherwise(
+        enrichBuildSpecTask
+          .addCatch(markFailureTask, { resultPath: '$.error' })
+          .next(checkMaxIterations)
+      );
+
+    // Check OI success - route to QA (not directly to deploy anymore)
+    // Must use isPresent guard because when OI fails, get-task-output returns
+    // {"success": false, "error": "..."} with no "status" field, which would crash
+    // the Choice state with States.Runtime invalid path error.
+    const checkOiSuccess = new sfn.Choice(this, 'CheckOiSuccess')
+      .when(
+        sfn.Condition.and(
+          sfn.Condition.isPresent('$.oiOutput.output.status'),
+          sfn.Condition.stringEquals('$.oiOutput.output.status', 'success'),
+        ),
+        qaTask
+          .addCatch(markFailureTask, { resultPath: '$.error' })
+          .next(
+            getQaOutputTask
+              .addCatch(markFailureTask, { resultPath: '$.error' })
+              .next(checkQASuccess)
+          )
       )
       .otherwise(formatOiError);
 
-    const definition = coreTask
-      .addCatch(markFailureTask, { resultPath: '$.error' })
-      .next(getCoreOutputTask.addCatch(markFailureTask, { resultPath: '$.error' }))
-      .next(oiTask.addCatch(markFailureTask, { resultPath: '$.error' }))
-      .next(getOiOutputTask.addCatch(markFailureTask, { resultPath: '$.error' }))
-      .next(checkOiSuccessChoice);
+    // Wire the feedback loop: incrementIteration -> coreTask (loops back)
+    incrementIteration.next(coreTask);
+
+    // Main pipeline definition
+    const definition = initBuild
+      .next(
+        coreTask
+          .addCatch(markFailureTask, { resultPath: '$.error' })
+          .next(getCoreOutputTask.addCatch(markFailureTask, { resultPath: '$.error' }))
+          .next(oiTask.addCatch(markFailureTask, { resultPath: '$.error' }))
+          .next(getOiOutputTask.addCatch(markFailureTask, { resultPath: '$.error' }))
+          .next(checkOiSuccess)
+      );
 
     this.buildStateMachine = new sfn.StateMachine(this, 'BuildStateMachine', {
       stateMachineName: `fable-${stage}-build-pipeline`,
       definitionBody: sfn.DefinitionBody.fromChainable(definition),
-      timeout: cdk.Duration.hours(2),
+      timeout: cdk.Duration.hours(3), // Increased for QA + retries
       logs: {
         destination: new logs.LogGroup(this, 'BuildStateMachineLogGroup', {
           logGroupName: `/aws/stepfunctions/fable-${stage}-build-pipeline`,
@@ -984,6 +1340,7 @@ export class FableStack extends cdk.Stack {
     connectionManagerFn.addToRolePolicy(webSocketManagePolicy);
     routerFn.addToRolePolicy(webSocketManagePolicy);
     chatFn.addToRolePolicy(webSocketManagePolicy);
+    workflowExecutorFn.addToRolePolicy(webSocketManagePolicy);
 
     // Add WebSocket API endpoint to Lambda environment
     const wsEndpoint = `${this.webSocketApi.apiId}.execute-api.${this.region}.amazonaws.com/${stage}`;
@@ -991,6 +1348,7 @@ export class FableStack extends cdk.Stack {
     connectionManagerFn.addEnvironment('WEBSOCKET_ENDPOINT', wsEndpoint);
     routerFn.addEnvironment('WEBSOCKET_ENDPOINT', wsEndpoint);
     chatFn.addEnvironment('WEBSOCKET_ENDPOINT', wsEndpoint);
+    workflowExecutorFn.addEnvironment('WEBSOCKET_ENDPOINT', wsEndpoint);
 
     // ============================================================
     // Outputs
@@ -1084,5 +1442,212 @@ export class FableStack extends cdk.Stack {
       description: 'CloudFront distribution ID for cache invalidation',
       exportName: `fable-${stage}-cloudfront-distribution-id`,
     });
+
+    new cdk.CfnOutput(this, 'WorkflowExecutorArn', {
+      value: workflowExecutorFn.functionArn,
+      description: 'Workflow Executor Lambda ARN',
+      exportName: `fable-${stage}-workflow-executor-arn`,
+    });
+
+    new cdk.CfnOutput(this, 'WorkflowsTableName', {
+      value: this.workflowsTable.tableName,
+      description: 'Workflows DynamoDB table name',
+      exportName: `fable-${stage}-workflows-table`,
+    });
+
+    new cdk.CfnOutput(this, 'WorkflowSchedulerRoleArn', {
+      value: schedulerRole.roleArn,
+      description: 'IAM role for EventBridge Scheduler to invoke workflow-executor',
+      exportName: `fable-${stage}-workflow-scheduler-role-arn`,
+    });
+
+    new cdk.CfnOutput(this, 'QAStationInstanceId', {
+      value: qaInstance.instanceId,
+      description: 'EC2 instance ID for QA Station',
+      exportName: `fable-${stage}-qa-instance-id`,
+    });
+
+    new cdk.CfnOutput(this, 'QAOrchestratorArn', {
+      value: qaOrchestratorFn.functionArn,
+      description: 'QA Orchestrator Lambda ARN',
+      exportName: `fable-${stage}-qa-orchestrator-arn`,
+    });
+  }
+
+  /**
+   * Generates the EC2 user data script for the QA Station.
+   * Installs: Node.js 20, Chrome, Claude Code CLI, Playwright, git, jq.
+   * Creates fable-qa user and /opt/fable/qa-entrypoint.sh.
+   */
+  private getQAUserDataScript(stage: string): string {
+    return `#!/bin/bash
+set -ex
+
+# Log everything for debugging
+exec > >(tee /var/log/fable-qa-setup.log) 2>&1
+
+echo "=== FABLE QA Station Setup ==="
+date
+
+# System updates
+dnf update -y
+# Note: AL2023 ships curl-minimal - don't install curl (conflicts)
+dnf install -y git jq wget unzip tar openssl
+
+# Install Node.js 20 via NodeSource
+curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+dnf install -y nodejs
+node --version
+npm --version
+
+# Install Chromium and required libraries for headless mode
+dnf install -y chromium-headless || dnf install -y chromium || {
+  echo "Chromium not in default repos, installing from EPEL or direct download"
+  dnf install -y \\
+    alsa-lib atk at-spi2-atk cups-libs libdrm libXcomposite \\
+    libXdamage libXrandr mesa-libgbm pango nss libxkbcommon || true
+}
+which chromium-browser 2>/dev/null || which chromium 2>/dev/null || which google-chrome 2>/dev/null || echo "WARNING: No Chrome/Chromium found"
+
+# Install Claude Code CLI
+npm install -g @anthropic-ai/claude-code
+claude --version || echo "Claude Code installed"
+
+# Install Playwright and browsers
+npm install -g playwright
+npx playwright install chromium
+npx playwright install-deps chromium || true
+
+# Create fable-qa user
+useradd -m -s /bin/bash fable-qa
+mkdir -p /opt/fable /home/fable-qa/.claude
+
+# Set up Claude Code config for Bedrock
+cat > /home/fable-qa/.claude/settings.json << 'SETTINGS_EOF'
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "Glob(*)",
+      "Grep(*)"
+    ]
+  }
+}
+SETTINGS_EOF
+
+# Create the QA entrypoint script
+cat > /opt/fable/qa-entrypoint.sh << 'QA_EOF'
+#!/bin/bash
+set -e
+
+# FABLE QA Entrypoint
+# Usage: qa-entrypoint.sh <artifacts-bucket> <build-id>
+
+ARTIFACTS_BUCKET="\$1"
+BUILD_ID="\$2"
+
+if [ -z "\$ARTIFACTS_BUCKET" ] || [ -z "\$BUILD_ID" ]; then
+  echo "Usage: qa-entrypoint.sh <artifacts-bucket> <build-id>"
+  exit 1
+fi
+
+echo "=== FABLE QA Starting ==="
+echo "Build: \$BUILD_ID"
+echo "Bucket: \$ARTIFACTS_BUCKET"
+
+# Set up workspace
+WORKSPACE="/home/fable-qa/qa-\$BUILD_ID"
+mkdir -p "\$WORKSPACE"
+cd "\$WORKSPACE"
+
+# Download QA input from S3
+aws s3 cp "s3://\$ARTIFACTS_BUCKET/builds/\$BUILD_ID/qa-input.json" ./qa-input.json
+
+# Extract info from qa-input.json
+GITHUB_SECRET_ARN=\$(jq -r '.githubSecretArn // empty' qa-input.json)
+STAGE=\$(jq -r '.stage // "dev"' qa-input.json)
+
+# Set up GitHub auth if secret available
+if [ -n "\$GITHUB_SECRET_ARN" ]; then
+  echo "Setting up GitHub authentication..."
+  SECRET=\$(aws secretsmanager get-secret-value --secret-id "\$GITHUB_SECRET_ARN" --query SecretString --output text)
+  APP_ID=\$(echo "\$SECRET" | jq -r '.appId')
+  PRIVATE_KEY=\$(echo "\$SECRET" | jq -r '.privateKey')
+  INSTALLATION_ID=\$(echo "\$SECRET" | jq -r '.installationId')
+
+  NOW=\$(date +%s)
+  IAT=\$((NOW - 60))
+  EXP=\$((NOW + 600))
+
+  HEADER=\$(echo -n '{"alg":"RS256","typ":"JWT"}' | base64 | tr -d '=' | tr '/+' '_-' | tr -d '\\n')
+  PAYLOAD=\$(echo -n "{\\"iat\\":\$IAT,\\"exp\\":\$EXP,\\"iss\\":\\"\$APP_ID\\"}" | base64 | tr -d '=' | tr '/+' '_-' | tr -d '\\n')
+  SIGNATURE=\$(echo -n "\$HEADER.\$PAYLOAD" | openssl dgst -sha256 -sign <(echo "\$PRIVATE_KEY") | base64 | tr -d '=' | tr '/+' '_-' | tr -d '\\n')
+  JWT="\$HEADER.\$PAYLOAD.\$SIGNATURE"
+
+  TOKEN_RESPONSE=\$(curl -s -X POST \\
+    -H "Authorization: Bearer \$JWT" \\
+    -H "Accept: application/vnd.github+json" \\
+    "https://api.github.com/app/installations/\$INSTALLATION_ID/access_tokens")
+
+  TOKEN=\$(echo "\$TOKEN_RESPONSE" | jq -r '.token')
+
+  if [ "\$TOKEN" != "null" ] && [ -n "\$TOKEN" ]; then
+    echo "https://x-access-token:\$TOKEN@github.com" > ~/.git-credentials
+    git config --global credential.helper store
+    export FABLE_GITHUB_REPO="\$(echo "\$SECRET" | jq -r '.repoOwner')/\$(echo "\$SECRET" | jq -r '.repoName')"
+    echo "GitHub auth configured for: \$FABLE_GITHUB_REPO"
+  fi
+fi
+
+# Download QA template from S3
+aws s3 cp "s3://\$ARTIFACTS_BUCKET/templates/CLAUDE.md.qa" ./CLAUDE.md 2>/dev/null || {
+  echo "QA template not found in S3, using embedded fallback"
+  echo "# FABLE QA Agent" > ./CLAUDE.md
+  echo "Read qa-input.json and verify the build works. Write results to qa-report.json." >> ./CLAUDE.md
+}
+
+# Set Claude Code env vars
+export CLAUDE_CODE_USE_BEDROCK=1
+export CLAUDE_CODE_SKIP_OOBE=1
+export DISABLE_AUTOUPDATER=1
+export AWS_REGION=\${AWS_REGION:-us-west-2}
+
+echo "=== Running Claude Code QA ==="
+claude -p "Read CLAUDE.md and qa-input.json. Execute the QA phase. Write your report to qa-report.json." --dangerously-skip-permissions 2>&1 || {
+  EXIT_CODE=\$?
+  echo "Claude exited with code: \$EXIT_CODE"
+}
+
+# Upload QA report to S3
+ITERATION=\$(jq -r '.iteration // 1' ./qa-input.json 2>/dev/null || echo "1")
+if [ -f ./qa-report.json ]; then
+  echo "=== Uploading QA report ==="
+  aws s3 cp ./qa-report.json "s3://\$ARTIFACTS_BUCKET/builds/\$BUILD_ID/qa-output.json"
+  aws s3 cp ./qa-report.json "s3://\$ARTIFACTS_BUCKET/builds/\$BUILD_ID/qa-output-iter\${ITERATION}.json" 2>/dev/null || true
+  echo "QA report uploaded"
+  cat ./qa-report.json
+else
+  echo "=== No qa-report.json produced ==="
+  echo '{"status":"fail","feedback":"QA agent did not produce a report","issues":[{"type":"structural","severity":"critical","message":"QA process failed to produce output"}]}' > ./qa-report.json
+  aws s3 cp ./qa-report.json "s3://\$ARTIFACTS_BUCKET/builds/\$BUILD_ID/qa-output.json"
+  aws s3 cp ./qa-report.json "s3://\$ARTIFACTS_BUCKET/builds/\$BUILD_ID/qa-output-iter\${ITERATION}.json" 2>/dev/null || true
+fi
+
+# Cleanup old workspaces (keep last 5)
+cd /home/fable-qa
+ls -dt qa-* 2>/dev/null | tail -n +6 | xargs rm -rf 2>/dev/null || true
+
+echo "=== QA Complete ==="
+QA_EOF
+chmod +x /opt/fable/qa-entrypoint.sh
+chown fable-qa:fable-qa /opt/fable/qa-entrypoint.sh
+chown -R fable-qa:fable-qa /home/fable-qa
+
+echo "=== FABLE QA Station Setup Complete ==="
+date
+`;
   }
 }

@@ -22,6 +22,57 @@ Look for:
 
 Use this context to inform your specification and template extensions.
 
+## ⚠️ RETRY AWARENESS — DO THIS BEFORE ANYTHING ELSE
+
+**Step 0 (before Your Job step 1):** Read `build-spec.json` and check for `qaFeedback` field.
+
+```bash
+# Check if this is a retry build
+cat build-spec.json | jq '.qaFeedback // empty'
+```
+
+### If `qaFeedback` EXISTS — this is a RETRY build:
+
+The previous attempt was built, deployed, and QA-tested. QA found real problems. Your job is to create a spec that **explicitly fixes every issue QA found**.
+
+**You MUST do all of the following:**
+
+1. **Extract mustFix items** — these are NON-NEGOTIABLE requirements:
+```bash
+cat build-spec.json | jq -r '.qaFeedback.mustFix[]'
+```
+
+2. **Convert EVERY mustFix item into an acceptance criterion.** Each mustFix becomes a checkbox item in `requirements.md` prefixed with `[QA-FIX REQUIRED]`. Example:
+```markdown
+## Acceptance Criteria
+- [ ] [QA-FIX REQUIRED] Add longestWord field — find longest word using words.reduce() and include in output
+- [ ] [QA-FIX REQUIRED] Add characterCountWithSpaces field — return text.length for count including spaces
+- [ ] [QA-FIX REQUIRED] Add input type validation — if typeof text !== 'string', return clear error
+- [ ] word count is correct
+- [ ] npm run build && npm run test passes
+```
+
+3. **Include QA feedback verbatim in the OI and Worker template extensions:**
+```markdown
+## QA FEEDBACK FROM PREVIOUS ATTEMPT (MUST READ)
+Summary: {paste qaFeedback.summary here}
+
+### Issues that MUST be fixed (non-negotiable):
+{paste each mustFix item as a numbered requirement}
+
+### Additional improvements:
+{paste each prioritizedFixes item}
+
+IMPORTANT: This build will be QA-tested again. If these issues are not fixed, QA will reject it again.
+```
+
+4. **Include the original user request** in `requirements.md`:
+```bash
+cat build-spec.json | jq -r '.request'
+```
+
+**CRITICAL:** If you create a spec without addressing every mustFix item, the build will fail QA again and waste another iteration. Every mustFix item MUST appear as an explicit acceptance criterion AND be included in the worker template.
+
 ## Project Awareness
 
 FABLE-TOOLS contains both Lambda tools AND frontend projects. Before creating specs, identify the project type.
@@ -121,16 +172,17 @@ tools/fable-ui/src/
 
 ## Your Job
 
-1. **Initialize** — Create `.fable/` directory, generate process ID, initialize graph, start logging
-2. **Analyze** the request deeply (use extended thinking)
-3. **Check** if a solution already exists (catalog, existing code, patterns to reuse)
-4. **Define interface contracts** — types, exports, APIs that components will share
-5. **Create specification** with testable acceptance criteria
-6. **Add tools to graph** — Create Tool nodes for each tool to be built
-7. **Extend** OI and Worker base templates for this project
-8. **Verify outputs exist** — Run `ls` on each file before proceeding (see "Before Spawning OI")
-9. **Spawn FABLE-OI** to implement
-10. **Verify** — When OI completes, validate graph invariants (see "Graph Validation")
+1. **Check for QA feedback** — Read `build-spec.json`, check for `qaFeedback` field. If present, follow the RETRY AWARENESS section above FIRST. Extract mustFix items and the original request.
+2. **Initialize** — Create `.fable/` directory, generate process ID, initialize graph, start logging
+3. **Analyze** the request deeply (use extended thinking). For retry builds, focus on what QA found wrong.
+4. **Check** if a solution already exists (catalog, existing code, patterns to reuse)
+5. **Define interface contracts** — types, exports, APIs that components will share
+6. **Create specification** with testable acceptance criteria. **For retry builds: every mustFix item MUST appear as a `[QA-FIX REQUIRED]` acceptance criterion.**
+7. **Add tools to graph** — Create Tool nodes for each tool to be built
+8. **Extend** OI and Worker base templates for this project. **For retry builds: include the full QA FEEDBACK section in both OI and Worker templates.**
+9. **Verify outputs exist** — Run `ls` on each file before proceeding (see "Before Spawning OI")
+10. **Spawn FABLE-OI** to implement
+11. **Verify** — When OI completes, validate graph invariants (see "Graph Validation")
 
 ## Logging
 
@@ -316,16 +368,25 @@ Built tools deploy as **AWS Lambda functions** with Function URLs:
 | Entry point | `index.handler` |
 | Handler signature | `async (event) => { return { statusCode, body } }` |
 
-**Package structure for deployment:**
+**CRITICAL: Package structure for deployment (must match exactly):**
 ```
 tool-name/
-├── index.ts          # Exports handler function
+├── src/
+│   └── index.ts      # MUST be at src/index.ts — exports handler function
 ├── package.json      # Dependencies (bundled by esbuild)
+├── tool.json         # Tool metadata (name, description, input schema)
 └── __tests__/        # Tests (not deployed)
 ```
 
-**MCP Server tools** should expose MCP protocol via the handler:
+**The entry point MUST be `src/index.ts`.** The deployment pipeline runs:
+```
+npx esbuild src/index.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/index.js
+```
+If `src/index.ts` doesn't exist, the build will fail. Do NOT put `index.ts` at the tool root.
+
+**Handler pattern:**
 ```typescript
+// src/index.ts
 export const handler = async (event: { body: string }) => {
   const request = JSON.parse(event.body);
   // Handle JSON-RPC: tools/list, tools/call
@@ -337,9 +398,12 @@ Include deployment requirements in `requirements.md`:
 ```markdown
 ## Deployment
 - Type: lambda
-- Entry: index.handler
+- Entry point: src/index.ts exporting handler function
+- Build: esbuild src/index.ts -> dist/index.js (CJS, Node 20)
 - Dependencies: [list runtime deps]
 ```
+
+Include this structural contract in OI and Worker template extensions so workers know exactly where to put files.
 
 ### For Frontend Projects (fable-ui)
 

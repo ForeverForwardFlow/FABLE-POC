@@ -9,17 +9,26 @@ import {
   DeleteFunctionCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-lambda';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import JSZip from 'jszip';
+import * as crypto from 'crypto';
+import * as https from 'https';
 
 const lambdaClient = new LambdaClient({});
+const s3Client = new S3Client({});
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
+
+const secretsClient = new SecretsManagerClient({});
 
 const TOOLS_TABLE = process.env.TOOLS_TABLE!;
 const ARTIFACTS_BUCKET = process.env.ARTIFACTS_BUCKET!;
 const TOOL_ROLE_ARN = process.env.TOOL_ROLE_ARN!;
 const STAGE = process.env.STAGE || 'dev';
+const GITHUB_SECRET_ARN = process.env.GITHUB_SECRET_ARN;
 
 interface DeployToolInput {
   toolName: string;
@@ -117,6 +126,33 @@ async function deployBatch(payload: BatchDeployPayload): Promise<{ statusCode: n
 
   console.log(`Batch deploy for build ${buildId}: ${tools.length} tools`);
 
+  // Check if this is a UI modification on a feature branch that needs merging
+  const deployment = oiOutput?.deployment;
+  if (tools.length === 0 && deployment?.method === 'github' && deployment.branch && deployment.branch !== 'main') {
+    console.log(`UI modification detected on branch ${deployment.branch}, merging to main...`);
+    try {
+      await mergeFeatureBranch(deployment.repo!, deployment.branch);
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          success: true,
+          deployed: [],
+          message: `Merged ${deployment.branch} to main — deploy-ui.yml will handle frontend deployment`,
+          mergedBranch: deployment.branch,
+        }),
+      };
+    } catch (mergeError) {
+      console.error('Failed to merge feature branch:', mergeError);
+      return {
+        statusCode: 500,
+        body: JSON.stringify({
+          success: false,
+          error: `Failed to merge ${deployment.branch} to main: ${String(mergeError)}`,
+        }),
+      };
+    }
+  }
+
   if (tools.length === 0) {
     console.log('No tools to deploy');
     return {
@@ -132,8 +168,7 @@ async function deployBatch(payload: BatchDeployPayload): Promise<{ statusCode: n
   const results = [];
   const errors = [];
 
-  // Extract git deployment metadata
-  const deployment = oiOutput?.deployment;
+  // deployment was already extracted above for branch-merge check
   const isGitHubDeploy = deployment?.method === 'github';
 
   for (const tool of tools) {
@@ -183,11 +218,57 @@ async function deployBatch(payload: BatchDeployPayload): Promise<{ statusCode: n
   };
 }
 
+// Download built code from GitHub, zip it, upload to S3 for Lambda deployment
+async function prepareGitHubArtifact(input: {
+  gitRepo: string;
+  gitPath: string;
+  gitCommit: string;
+  toolName: string;
+}): Promise<{ s3Bucket: string; s3Key: string }> {
+  const { token } = await getGitHubToken();
+  const [repoOwner, repoName] = input.gitRepo.split('/');
+
+  console.log(`Downloading dist/index.js from ${input.gitRepo}/${input.gitPath}@${input.gitCommit}`);
+
+  // Download dist/index.js from GitHub Contents API
+  const contents = await githubApiRequest(
+    'GET',
+    `/repos/${repoOwner}/${repoName}/contents/${input.gitPath}/dist/index.js?ref=${input.gitCommit}`,
+    token,
+  );
+
+  if (!contents.content) {
+    throw new Error(`No content returned for ${input.gitPath}/dist/index.js — file may be too large or missing`);
+  }
+
+  // Decode base64 content from GitHub
+  const fileContent = Buffer.from(contents.content as string, 'base64');
+  console.log(`Downloaded ${fileContent.length} bytes`);
+
+  // Create zip with index.js at root (Lambda handler expects this)
+  const zip = new JSZip();
+  zip.file('index.js', fileContent);
+  const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+
+  // Upload to S3
+  const s3Key = `tools/${input.toolName}/lambda.zip`;
+  await s3Client.send(new PutObjectCommand({
+    Bucket: ARTIFACTS_BUCKET,
+    Key: s3Key,
+    Body: zipBuffer,
+    ContentType: 'application/zip',
+  }));
+
+  console.log(`Uploaded Lambda zip to s3://${ARTIFACTS_BUCKET}/${s3Key} (${zipBuffer.length} bytes)`);
+
+  return { s3Bucket: ARTIFACTS_BUCKET, s3Key };
+}
+
 async function deployTool(input: DeployToolInput): Promise<{ statusCode: number; body: string }> {
   const {
     toolName,
-    s3Key,
-    s3Bucket = ARTIFACTS_BUCKET,
+    s3Key: inputS3Key,
+    s3Bucket: inputS3Bucket = ARTIFACTS_BUCKET,
     description = `FABLE-built tool: ${toolName}`,
     schema,
     memorySize = 256,
@@ -201,13 +282,28 @@ async function deployTool(input: DeployToolInput): Promise<{ statusCode: number;
     gitCommit,
   } = input;
 
+  // Resolve deployment artifact: S3 key directly, or download from GitHub
+  let s3Key = inputS3Key;
+  let s3Bucket = inputS3Bucket;
+
+  if (!s3Key && gitRepo && gitPath && gitCommit) {
+    console.log(`No s3Key provided, downloading from GitHub: ${gitRepo}/${gitPath}@${gitCommit}`);
+    const artifact = await prepareGitHubArtifact({ gitRepo, gitPath, gitCommit, toolName });
+    s3Key = artifact.s3Key;
+    s3Bucket = artifact.s3Bucket;
+  }
+
+  if (!s3Key) {
+    throw new Error(`No deployment artifact for ${toolName}: need either s3Key or gitRepo+gitPath+gitCommit`);
+  }
+
   // Determine deployment method
   const deployedBy = gitCommit ? 'github-actions' : 'direct';
 
   // Sanitize tool name for Lambda function name
   const functionName = `fable-${STAGE}-tool-${toolName.toLowerCase().replace(/[^a-z0-9-]/g, '-')}`;
 
-  console.log(`Deploying tool: ${toolName} as ${functionName}`);
+  console.log(`Deploying tool: ${toolName} as ${functionName} from s3://${s3Bucket}/${s3Key}`);
 
   let functionArn: string;
   let functionUrl: string;
@@ -393,4 +489,95 @@ async function waitForFunctionActive(functionName: string, maxAttempts = 30): Pr
   }
 
   throw new Error(`Function ${functionName} did not become active in time`);
+}
+
+// ============================================================
+// GitHub API helpers for merging feature branches
+// ============================================================
+
+async function getGitHubToken(): Promise<{ token: string; owner: string; repo: string }> {
+  if (!GITHUB_SECRET_ARN) throw new Error('GITHUB_SECRET_ARN not configured');
+
+  const secret = await secretsClient.send(new GetSecretValueCommand({
+    SecretId: GITHUB_SECRET_ARN,
+  }));
+  const creds = JSON.parse(secret.SecretString!);
+
+  // Generate JWT for GitHub App
+  const now = Math.floor(Date.now() / 1000);
+  const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({
+    iat: now - 60,
+    exp: now + (10 * 60),
+    iss: creds.appId,
+  })).toString('base64url');
+
+  const signature = crypto.sign('sha256', Buffer.from(`${header}.${payload}`), creds.privateKey).toString('base64url');
+
+  const jwt = `${header}.${payload}.${signature}`;
+
+  // Exchange JWT for installation access token
+  const installationToken = await githubApiRequest(
+    'POST',
+    `/app/installations/${creds.installationId}/access_tokens`,
+    jwt,
+  );
+
+  return {
+    token: installationToken.token as string,
+    owner: creds.repoOwner,
+    repo: creds.repoName,
+  };
+}
+
+async function mergeFeatureBranch(repoFullName: string, branch: string): Promise<void> {
+  const { token, owner, repo } = await getGitHubToken();
+  const targetRepo = repoFullName || `${owner}/${repo}`;
+  const [repoOwner, repoName] = targetRepo.split('/');
+
+  console.log(`Merging ${branch} into main for ${targetRepo}`);
+
+  const result = await githubApiRequest(
+    'POST',
+    `/repos/${repoOwner}/${repoName}/merges`,
+    token,
+    {
+      base: 'main',
+      head: branch,
+      commit_message: `Merge ${branch} into main (FABLE deploy)`,
+    },
+  );
+
+  console.log(`Merge successful: ${result.sha}`);
+}
+
+function githubApiRequest(method: string, path: string, token: string, body?: unknown): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const data = body ? JSON.stringify(body) : undefined;
+    const req = https.request({
+      hostname: 'api.github.com',
+      path,
+      method,
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'FABLE-Deploy',
+        'X-GitHub-Api-Version': '2022-11-28',
+        ...(data && { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) }),
+      },
+    }, (res) => {
+      let responseData = '';
+      res.on('data', (chunk: Buffer) => { responseData += chunk.toString(); });
+      res.on('end', () => {
+        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+          resolve(JSON.parse(responseData || '{}'));
+        } else {
+          reject(new Error(`GitHub API ${method} ${path}: ${res.statusCode} ${responseData}`));
+        }
+      });
+    });
+    req.on('error', reject);
+    if (data) req.write(data);
+    req.end();
+  });
 }
