@@ -125,7 +125,9 @@ While that runs, continue implementing the source file.
 
 Verify ALL of the following:
 
-**1. Code Works (actually run these):**
+**1. Code Works (actually run the quality check from your task section):**
+
+For Lambda tools (default):
 ```bash
 npm run build   # Exit code must be 0
 npm run test    # Exit code must be 0, all tests pass
@@ -134,7 +136,13 @@ npm run test    # Exit code must be 0, all tests pass
 npm pkg get scripts.lint 2>/dev/null | grep -v '{}' && npm run lint || echo "No lint script, skipping"
 ```
 
-**NOTE:** Build and test are required. Lint is only required if the project has a lint script configured.
+For frontend projects (when specified in your task section):
+```bash
+# Run the quality command specified in your task — e.g.:
+# cd tools/fable-ui && npm install && npm run quality
+```
+
+**NOTE:** Use the quality command from your task section below. For Lambda tools, build and test are required. For frontend projects, `npm run quality` covers type-check + lint + test.
 
 **2. Timeline Contains Required Events:**
 - [ ] `started` event logged

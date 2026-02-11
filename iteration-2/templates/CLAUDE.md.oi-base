@@ -43,16 +43,29 @@ fi
 Create a file to track the mode:
 
 ```bash
-# For existing tools:
-echo "EXTENSION" > /tmp/build-mode.txt
+TOOL_NAME="{tool-name-from-spec}"
 
-# For new tools:
-echo "CREATE" > /tmp/build-mode.txt
+# Check if tool exists AND what type it is
+if [ -d "/tmp/fable-tools-check/tools/$TOOL_NAME" ]; then
+    # Check tool type from tool.json
+    TOOL_TYPE=$(jq -r '.type // "lambda"' /tmp/fable-tools-check/tools/$TOOL_NAME/tool.json 2>/dev/null || echo "lambda")
+
+    if [ "$TOOL_TYPE" = "frontend" ]; then
+        echo "FRONTEND" > /tmp/build-mode.txt
+        echo "=== FRONTEND MODE: '$TOOL_NAME' is a frontend project ==="
+    else
+        echo "EXTENSION" > /tmp/build-mode.txt
+        echo "=== EXTENSION MODE: Tool '$TOOL_NAME' already exists ==="
+    fi
+else
+    echo "CREATE" > /tmp/build-mode.txt
+    echo "=== CREATE MODE: Tool '$TOOL_NAME' is new ==="
+fi
 ```
 
 ---
 
-## Extension Mode vs Create Mode
+## Build Modes: FRONTEND vs EXTENSION vs CREATE
 
 ### EXTENSION MODE (tool exists)
 
@@ -120,6 +133,87 @@ When `/tmp/build-mode.txt` contains "CREATE":
 - Create the tool from scratch as normal
 - No existing code to reference
 - You may create package.json, tsconfig.json, etc.
+
+### FRONTEND MODE (Vue/Quasar project)
+
+When `/tmp/build-mode.txt` contains "FRONTEND":
+
+You are modifying an existing Vue 3 + Quasar frontend project, NOT creating a Lambda tool.
+
+**1. Understand the project structure:**
+```bash
+# Read the existing project layout
+ls /tmp/fable-tools-check/tools/fable-ui/src/pages/
+ls /tmp/fable-tools-check/tools/fable-ui/src/components/
+ls /tmp/fable-tools-check/tools/fable-ui/src/stores/
+cat /tmp/fable-tools-check/tools/fable-ui/src/router/routes.ts
+cat /tmp/fable-tools-check/tools/fable-ui/package.json
+```
+
+**2. Save existing files workers will modify:**
+```bash
+# Save files that workers need as context
+# For each file a worker will modify, save it:
+cp /tmp/fable-tools-check/tools/fable-ui/src/router/routes.ts /tmp/existing-routes.ts
+# Save any other files workers need to see
+```
+
+**3. Worker decomposition by file (spatial isolation):**
+- **Page worker** — Creates/modifies files in `src/pages/`
+- **Component worker** — Creates/modifies files in `src/components/`
+- **Store worker** — Creates/modifies files in `src/stores/`
+- **Route worker** — Updates `src/router/routes.ts` to wire new pages
+
+Workers must NOT modify the same files. If a new page needs a component, store, AND route update, use separate workers with clear file boundaries.
+
+**4. Worker CLAUDE.md for frontend MUST include:**
+
+```markdown
+## FRONTEND MODIFICATION TASK
+
+You are modifying the FABLE UI (Vue 3 + Quasar + TypeScript).
+
+### Project Conventions
+- Components use `<script setup lang="ts">` with Composition API
+- State: Pinia stores with `defineStore('name', () => { ... })` composition syntax
+- Reactivity: `ref()`, `computed()`, `watch()`
+- Props: `defineProps<{ prop: Type }>()`
+- Routing: lazy-loaded pages `() => import('pages/MyPage.vue')`
+- UI: Quasar component library (Q* prefix, e.g. QPage, QBtn, QCard)
+- Styling: SCSS with scoped styles, Quasar CSS classes, custom CSS properties
+- Imports: use path aliases (stores/, components/, services/)
+- TypeScript: strict mode, no `any` types
+
+### Your Files (ONLY modify these):
+{list specific files this worker owns}
+
+### Existing Code (for files you're modifying):
+{paste relevant existing file contents}
+
+### Your Task:
+{describe the specific modification}
+
+### Quality Check:
+cd tools/fable-ui && npm install && npm run quality
+
+### CRITICAL RULES:
+1. ONLY modify files listed in "Your Files" above
+2. Preserve existing functionality — do NOT break other pages/components
+3. Follow the project conventions above
+4. Do NOT create jest.config.js, tsconfig.json, or package.json — they already exist
+5. Do NOT add Lambda handler exports — this is a frontend project
+```
+
+**5. Quality verification for frontend:**
+```bash
+cd /tmp/fable-tools/tools/fable-ui
+npm install
+npm run quality  # type-check + lint + test — must exit 0
+```
+
+**6. Output for frontend builds:**
+Output `tools: []` in output.json — the Deploy Lambda handles this gracefully.
+GitHub Actions `deploy-ui.yml` triggers automatically when you push to main.
 
 ---
 
@@ -642,6 +736,7 @@ echo "Pushed to $FABLE_GITHUB_REPO at commit $COMMIT_SHA"
 
 When writing `output.json`, include git-based deployment info:
 
+**For Lambda tool builds:**
 ```json
 {
   "status": "success",
@@ -674,7 +769,28 @@ When writing `output.json`, include git-based deployment info:
 }
 ```
 
-### Tool Code Structure
+**For frontend modification builds:**
+```json
+{
+  "status": "success",
+  "type": "modification",
+  "deployment": {
+    "method": "github",
+    "repo": "$FABLE_GITHUB_REPO",
+    "commit": "{COMMIT_SHA}",
+    "branch": "main"
+  },
+  "tools": [],
+  "modifications": [
+    {"file": "tools/fable-ui/src/pages/NewPage.vue", "action": "created"},
+    {"file": "tools/fable-ui/src/router/routes.ts", "action": "modified"}
+  ]
+}
+```
+
+**Note:** `tools: []` ensures the Deploy Lambda returns success without creating Lambdas. The frontend deployment is triggered by `deploy-ui.yml` when changes to `tools/fable-ui/**` are pushed to main.
+
+### Tool Code Structure (Lambda tools only)
 
 Each tool Lambda must export a handler that accepts input and returns output:
 
@@ -710,6 +826,8 @@ If the push failed (network error, auth issue), retry once before reporting fail
 Before outputting `<promise>TASK_COMPLETE</promise>`, verify ALL of the following:
 
 **1. Code Actually Works (run these commands and confirm exit code 0):**
+
+**For Lambda tools:**
 ```bash
 npm run build   # Must exit 0
 
@@ -720,14 +838,14 @@ npm pkg get scripts.test 2>/dev/null | grep -v '{}' && npm run test
 npm pkg get scripts.lint 2>/dev/null | grep -v '{}' && npm run lint || echo "No lint script, skipping"
 ```
 
-**IMPORTANT:** Use `npm pkg get scripts.{name}` to check if a script exists before running it. A script that doesn't exist should be SKIPPED, not treated as a failure.
+**For Frontend projects (fable-ui):**
+```bash
+cd /tmp/fable-tools/tools/fable-ui
+npm install
+npm run quality  # type-check + lint + test — must exit 0
+```
 
-**1b. For Frontend Projects - Playwright Verification:**
-- [ ] Dev server starts successfully
-- [ ] Page loads without console errors
-- [ ] All required UI elements are visible
-- [ ] Basic interactions work (if specified)
-- [ ] Browser closed cleanly
+**IMPORTANT:** Use `npm pkg get scripts.{name}` to check if a script exists before running it. A script that doesn't exist should be SKIPPED, not treated as a failure.
 
 **2. Graph Invariants Satisfied (check .fable/graph.json):**
 - [ ] Every tool node has an `implements` edge from a source file

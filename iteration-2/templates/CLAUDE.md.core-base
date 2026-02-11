@@ -22,6 +22,103 @@ Look for:
 
 Use this context to inform your specification and template extensions.
 
+## Project Awareness
+
+FABLE-TOOLS contains both Lambda tools AND frontend projects. Before creating specs, identify the project type.
+
+### Known Project Types in FABLE-TOOLS
+
+| Path | Type | Tech Stack | Quality Check |
+|------|------|-----------|---------------|
+| `tools/fable-ui/` | frontend | Vue 3 + Quasar + TypeScript + Vite + Pinia | `npm run quality` (type-check + lint + test) |
+| `tools/*/` (other) | lambda | Node.js + TypeScript + esbuild | `npm run build && npm run test` |
+
+### Detection
+
+Analyze the user request for signals:
+- UI/frontend/page/component/dashboard/sidebar/layout → targets `fable-ui` (frontend modification)
+- Tool/function/API/calculate/transform → targets a Lambda tool (tool creation)
+- Ambiguous → default to Lambda tool (existing behavior)
+
+### Frontend Modification Specs
+
+When the request targets `fable-ui`, create a modification spec in `requirements.md`:
+
+```markdown
+## Project
+- Type: frontend
+- Path: tools/fable-ui/
+- Tech Stack: Vue 3 + Quasar + TypeScript + Vite + Pinia
+
+## Modification
+- Description: {what to change/add}
+- Affected areas: {pages, components, stores, etc.}
+- Existing structure to preserve: {list key files that must NOT break}
+
+## Acceptance Criteria
+- [ ] {testable criteria}
+- [ ] `npm run quality` passes (type-check + lint + test)
+- [ ] No regressions in existing functionality
+
+## Verification Strategy
+- Type: frontend
+- Quality command: npm run quality
+- Quality runs in: tools/fable-ui/
+
+## Deployment
+- Type: github-push
+- Deploy trigger: push to main with changes in tools/fable-ui/**
+- CI/CD: GitHub Actions deploy-ui.yml → S3 + CloudFront
+```
+
+When extending OI and Worker templates for frontend modifications:
+- Include Vue 3 + Quasar conventions (from reference below)
+- Include the existing project structure summary
+- Specify which `src/` subdirectories workers may modify
+- Workers must NOT overlap on files (spatial isolation)
+
+## Vue/Quasar Reference (for frontend modifications)
+
+Include these conventions in extended OI/Worker templates when modifying fable-ui:
+
+### Project Structure
+```
+tools/fable-ui/src/
+├── App.vue              # Root component
+├── boot/                # Initialization (auth, axios)
+├── router/              # Vue Router (index.ts, routes.ts)
+├── stores/              # Pinia stores (defineStore composition API)
+├── layouts/             # Layout components (MainLayout.vue)
+├── pages/               # Page components (routed, lazy-loaded)
+├── components/          # Reusable components (organized by feature)
+├── services/            # Business logic & API clients
+├── types/               # TypeScript type definitions
+├── css/                 # Global styles (SCSS + Quasar variables)
+└── composables/         # Reusable Vue composition functions
+```
+
+### Component Pattern
+- `<script setup lang="ts">` with Composition API
+- Reactivity: `ref()`, `computed()`, `watch()`
+- Props: `defineProps<{ prop: Type }>()`
+- Emits: `defineEmits<{ (e: 'event', payload: Type): void }>()`
+- Imports use path aliases: `stores/`, `components/`, `services/`
+
+### Store Pattern
+- `defineStore('name', () => { ... })` composition syntax
+- State: `ref()`, Getters: `computed()`, Actions: async functions
+- Explicit return object exposes public API
+
+### Routing
+- Lazy-loaded: `component: () => import('pages/MyPage.vue')`
+- Routes defined in `src/router/routes.ts`
+- Nested routes under layout
+
+### Styling
+- SCSS with Quasar component library (Q* prefix components)
+- CSS custom properties for theming
+- Scoped styles in components: `<style scoped lang="scss">`
+
 ## Your Job
 
 1. **Initialize** — Create `.fable/` directory, generate process ID, initialize graph, start logging
@@ -53,30 +150,25 @@ Determine the appropriate verification approach based on project type:
 
 | Project Type | Verification Strategy | Tools Required |
 |--------------|----------------------|----------------|
-| Backend/MCP Server | `npm run build && npm run test` | Node.js only |
-| Frontend/UI | Playwright browser automation | Playwright MCP |
-| CLI Tool | `npm run build && npm run test` | Node.js only |
-| Full Stack | Both backend tests AND Playwright | Both |
+| Lambda Tool | `npm run build && npm run test` | Node.js only |
+| Frontend (fable-ui) | `npm run quality` (type-check + lint + test) | Node.js only |
+| MCP Server | `npm run build && npm run test` | Node.js only |
 
-**For Frontend projects:**
-1. OI must start the dev server (`npm run dev`)
-2. OI must use Playwright MCP tools to verify:
-   - Page loads without console errors
-   - Key UI elements render correctly
-   - Basic interactions work (click, type)
-3. If Playwright verification fails, OI spawns a fix-it worker
-4. Loop until UI passes browser verification
+**For Lambda tools:**
+- Workers run `npm run build && npm run test` in the tool directory
+- Standard exit code verification
+
+**For Frontend (fable-ui) modifications:**
+- Workers run `npm run quality` in `tools/fable-ui/`
+- This runs type-check + lint + unit tests
+- No Playwright browser verification needed (CI/CD handles build verification)
 
 Include verification strategy in `requirements.md`:
 ```markdown
 ## Verification Strategy
-- Type: frontend
-- Dev server command: npm run dev
-- Dev server URL: http://localhost:9000
-- Playwright checks:
-  - [ ] Page loads without errors
-  - [ ] {list key elements that must be visible}
-  - [ ] {list interactions to verify}
+- Type: frontend | lambda
+- Quality command: npm run quality | npm run build && npm run test
+- Quality runs in: tools/fable-ui/ | tools/{tool-name}/
 ```
 
 ## Graph Initialization
@@ -98,10 +190,16 @@ Create `.fable/graph.json` with initial structure:
 }
 ```
 
-Then add Tool nodes for each tool to be built:
+Then add nodes for each item to be built:
 
+**For Lambda tools:**
 ```json
 {"id": "tool-{name}", "type": "tool", "name": "{name}", "description": "...", "created_at": "...", "created_by": "core-xxx"}
+```
+
+**For frontend modifications:**
+```json
+{"id": "mod-{name}", "type": "modification", "project": "fable-ui", "name": "{name}", "description": "...", "created_at": "...", "created_by": "core-xxx"}
 ```
 
 ## Outputs
@@ -207,6 +305,8 @@ memory_create(
 
 ## Deployment Target
 
+### For Lambda Tools
+
 Built tools deploy as **AWS Lambda functions** with Function URLs:
 
 | Requirement | Value |
@@ -239,6 +339,39 @@ Include deployment requirements in `requirements.md`:
 - Type: lambda
 - Entry: index.handler
 - Dependencies: [list runtime deps]
+```
+
+### For Frontend Projects (fable-ui)
+
+No Lambda deployment needed. OI pushes modifications to FABLE-TOOLS main branch.
+GitHub Actions `deploy-ui.yml` automatically builds and deploys to S3 + CloudFront.
+
+The output.json for frontend modifications should use:
+```json
+{
+  "status": "success",
+  "type": "modification",
+  "tools": [],
+  "deployment": {
+    "method": "github",
+    "repo": "ForeverForwardFlow/FABLE-TOOLS",
+    "commit": "{commit-sha}"
+  },
+  "modifications": [
+    {"file": "tools/fable-ui/src/pages/NewPage.vue", "action": "created"},
+    {"file": "tools/fable-ui/src/router/routes.ts", "action": "modified"}
+  ]
+}
+```
+
+**Note:** `tools: []` ensures the Deploy Lambda returns success without creating any Lambdas. The actual frontend deployment is handled by GitHub Actions CI/CD.
+
+Include deployment requirements in `requirements.md`:
+```markdown
+## Deployment
+- Type: github-push
+- Target: tools/fable-ui/ in FABLE-TOOLS
+- CI/CD: deploy-ui.yml → S3 + CloudFront
 ```
 
 ## Guardrails
