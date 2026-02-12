@@ -6,8 +6,10 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNodejs from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as apigatewayv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigatewayv2_integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import * as apigatewayv2_authorizers from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
@@ -268,6 +270,65 @@ export class FableStack extends cdk.Stack {
       ],
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
       comment: `FABLE UI ${stage}`,
+    });
+
+    // ============================================================
+    // Cognito User Pool (Authentication)
+    // ============================================================
+
+    const userPool = new cognito.UserPool(this, 'FableUserPool', {
+      userPoolName: `fable-${stage}-users`,
+      selfSignUpEnabled: true,
+      signInAliases: { email: true },
+      autoVerify: { email: true },
+      standardAttributes: {
+        email: { required: true, mutable: true },
+      },
+      customAttributes: {
+        orgId: new cognito.StringAttribute({ mutable: true }),
+        orgRole: new cognito.StringAttribute({ mutable: true }),
+      },
+      passwordPolicy: {
+        minLength: 8,
+        requireLowercase: true,
+        requireUppercase: true,
+        requireDigits: true,
+        requireSymbols: false,
+      },
+      accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+      removalPolicy: stage === 'prod' ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+    });
+
+    // Cognito Domain (for hosted login UI)
+    userPool.addDomain('FableCognitoDomain', {
+      cognitoDomain: {
+        domainPrefix: config.cognitoDomainPrefix,
+      },
+    });
+
+    // User Pool Client (SPA — no secret)
+    const userPoolClient = userPool.addClient('FableWebClient', {
+      userPoolClientName: `fable-${stage}-web`,
+      generateSecret: false,
+      authFlows: {
+        userSrp: true,
+      },
+      oAuth: {
+        flows: { authorizationCodeGrant: true },
+        scopes: [
+          cognito.OAuthScope.OPENID,
+          cognito.OAuthScope.EMAIL,
+          cognito.OAuthScope.PROFILE,
+        ],
+        callbackUrls: [
+          `https://${frontendDistribution.distributionDomainName}/auth/callback`,
+          ...(stage !== 'prod' ? ['http://localhost:5173/auth/callback'] : []),
+        ],
+        logoutUrls: [
+          `https://${frontendDistribution.distributionDomainName}`,
+          ...(stage !== 'prod' ? ['http://localhost:5173'] : []),
+        ],
+      },
     });
 
     // ============================================================
@@ -694,17 +755,84 @@ export class FableStack extends cdk.Stack {
       resources: [`arn:aws:lambda:${this.region}:${this.account}:function:fable-${stage}-tool-*`],
     }));
 
-    // Function URL for MCP Gateway (NONE auth — TODO: add API Gateway with Cognito for production)
+    // Function URL for MCP Gateway (AWS_IAM auth — used by ECS build tasks)
     const mcpGatewayUrl = mcpGatewayFn.addFunctionUrl({
-      authType: lambda.FunctionUrlAuthType.NONE,
-      cors: {
-        allowedOrigins: [
-          `https://${frontendDistribution.distributionDomainName}`,
-          ...(stage !== 'prod' ? ['http://localhost:*'] : []),
-        ],
-        allowedMethods: [lambda.HttpMethod.GET, lambda.HttpMethod.POST],
-        allowedHeaders: ['content-type', 'authorization'],
+      authType: lambda.FunctionUrlAuthType.AWS_IAM,
+    });
+
+    // ============================================================
+    // WebSocket Authorizer Lambda
+    // ============================================================
+
+    const wsAuthorizerFn = new lambdaNodejs.NodejsFunction(this, 'WsAuthorizerFn', {
+      functionName: `fable-${stage}-ws-authorizer`,
+      entry: path.join(__dirname, '../lambda/ws-authorizer/index.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      environment: {
+        USER_POOL_ID: userPool.userPoolId,
+        CLIENT_ID: userPoolClient.userPoolClientId,
+        ALLOW_ANONYMOUS: 'true', // Migration: allow unauthenticated connections
       },
+      timeout: cdk.Duration.seconds(10),
+      memorySize: 128,
+      logRetention: logs.RetentionDays.ONE_WEEK,
+      bundling: bundlingOptions,
+    });
+
+    // ============================================================
+    // HTTP API Gateway for MCP Gateway (browser access with JWT auth)
+    // ============================================================
+
+    const cognitoIssuer = `https://cognito-idp.${this.region}.amazonaws.com/${userPool.userPoolId}`;
+
+    const mcpHttpApi = new apigatewayv2.HttpApi(this, 'McpHttpApi', {
+      apiName: `fable-${stage}-mcp-api`,
+      description: 'FABLE MCP Gateway API with Cognito JWT auth',
+      corsPreflight: {
+        allowOrigins: [
+          `https://${frontendDistribution.distributionDomainName}`,
+          ...(stage !== 'prod' ? ['http://localhost:5173'] : []),
+        ],
+        allowMethods: [
+          apigatewayv2.CorsHttpMethod.GET,
+          apigatewayv2.CorsHttpMethod.POST,
+          apigatewayv2.CorsHttpMethod.OPTIONS,
+        ],
+        allowHeaders: ['content-type', 'authorization'],
+        maxAge: cdk.Duration.hours(1),
+      },
+    });
+
+    // JWT authorizer validates Cognito ID tokens
+    const mcpJwtAuthorizer = new apigatewayv2_authorizers.HttpJwtAuthorizer(
+      'McpJwtAuthorizer',
+      cognitoIssuer,
+      {
+        jwtAudience: [userPoolClient.userPoolClientId],
+        identitySource: ['$request.header.Authorization'],
+      },
+    );
+
+    // Route all requests to MCP Gateway Lambda
+    const mcpIntegration = new apigatewayv2_integrations.HttpLambdaIntegration(
+      'McpLambdaIntegration',
+      mcpGatewayFn,
+    );
+
+    mcpHttpApi.addRoutes({
+      path: '/{proxy+}',
+      methods: [apigatewayv2.HttpMethod.GET, apigatewayv2.HttpMethod.POST],
+      integration: mcpIntegration,
+      authorizer: mcpJwtAuthorizer,
+    });
+
+    // Also add root path route
+    mcpHttpApi.addRoutes({
+      path: '/',
+      methods: [apigatewayv2.HttpMethod.GET, apigatewayv2.HttpMethod.POST],
+      integration: mcpIntegration,
+      authorizer: mcpJwtAuthorizer,
     });
 
     // ============================================================
@@ -1297,10 +1425,22 @@ export class FableStack extends cdk.Stack {
     // ============================================================
     // WebSocket API Gateway
     // ============================================================
+    // WebSocket Lambda authorizer (validates JWT on $connect, anonymous fallback)
+    const wsAuthorizer = new apigatewayv2_authorizers.WebSocketLambdaAuthorizer(
+      'WsAuthorizer',
+      wsAuthorizerFn,
+      {
+        // Empty identity source: authorizer is always called (supports anonymous fallback)
+        // When auth is required, change to: ['route.request.querystring.token']
+        identitySource: [],
+      },
+    );
+
     this.webSocketApi = new apigatewayv2.WebSocketApi(this, 'FableWebSocketApi', {
       apiName: `fable-${stage}-websocket`,
       description: 'FABLE WebSocket API for real-time communication',
       connectRouteOptions: {
+        authorizer: wsAuthorizer,
         integration: new apigatewayv2_integrations.WebSocketLambdaIntegration(
           'ConnectIntegration',
           connectionManagerFn
@@ -1485,6 +1625,30 @@ export class FableStack extends cdk.Stack {
       value: qaOrchestratorFn.functionArn,
       description: 'QA Orchestrator Lambda ARN',
       exportName: `fable-${stage}-qa-orchestrator-arn`,
+    });
+
+    new cdk.CfnOutput(this, 'CognitoUserPoolId', {
+      value: userPool.userPoolId,
+      description: 'Cognito User Pool ID',
+      exportName: `fable-${stage}-user-pool-id`,
+    });
+
+    new cdk.CfnOutput(this, 'CognitoClientId', {
+      value: userPoolClient.userPoolClientId,
+      description: 'Cognito User Pool Client ID',
+      exportName: `fable-${stage}-client-id`,
+    });
+
+    new cdk.CfnOutput(this, 'CognitoDomain', {
+      value: `https://${config.cognitoDomainPrefix}.auth.${this.region}.amazoncognito.com`,
+      description: 'Cognito hosted UI domain',
+      exportName: `fable-${stage}-cognito-domain`,
+    });
+
+    new cdk.CfnOutput(this, 'McpApiUrl', {
+      value: mcpHttpApi.apiEndpoint,
+      description: 'MCP Gateway HTTP API URL (JWT-protected)',
+      exportName: `fable-${stage}-mcp-api-url`,
     });
   }
 

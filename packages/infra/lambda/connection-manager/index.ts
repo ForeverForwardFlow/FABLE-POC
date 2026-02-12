@@ -17,6 +17,11 @@ export const handler: APIGatewayProxyHandler = async (event): Promise<APIGateway
 
   try {
     if (routeKey === '$connect') {
+      // Extract userId and orgId from WebSocket authorizer context
+      const authContext = event.requestContext.authorizer as Record<string, string> | undefined;
+      const userId = authContext?.userId || 'anonymous';
+      const orgId = authContext?.orgId || 'default';
+
       // Store connection in DynamoDB
       const ttl = Math.floor(Date.now() / 1000) + 24 * 60 * 60; // 24 hours
 
@@ -24,8 +29,8 @@ export const handler: APIGatewayProxyHandler = async (event): Promise<APIGateway
         TableName: CONNECTIONS_TABLE,
         Item: {
           connectionId,
-          userId: 'anonymous', // TODO: Extract from auth token
-          orgId: 'default',    // TODO: Extract from auth token
+          userId,
+          orgId,
           connectedAt: new Date().toISOString(),
           detailsSubscribed: false,
           ttl,

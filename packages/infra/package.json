@@ -41,6 +41,7 @@
   "dependencies": {
     "@aws-sdk/client-scheduler": "^3.987.0",
     "aws-cdk-lib": "^2.236.0",
+    "aws-jwt-verify": "^5.1.1",
     "constructs": "^10.0.0",
     "jszip": "^3.10.1"
   }

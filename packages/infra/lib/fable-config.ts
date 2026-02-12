@@ -25,6 +25,9 @@ export interface FableConfig {
 
   /** Max QA feedback loop iterations before marking build as failed (default: 3) */
   maxBuildIterations?: number;
+
+  /** Cognito domain prefix for managed login (default: 'fable-{stage}') */
+  cognitoDomainPrefix?: string;
 }
 
 /** Apply defaults to a partial config */
@@ -37,5 +40,6 @@ export function resolveConfig(config: FableConfig): Required<FableConfig> {
     ecsMemoryMiB: config.ecsMemoryMiB ?? 16384,
     ecsCpuUnits: config.ecsCpuUnits ?? 4096,
     maxBuildIterations: config.maxBuildIterations ?? 3,
+    cognitoDomainPrefix: config.cognitoDomainPrefix ?? `fable-${config.stage}`,
   };
 }
