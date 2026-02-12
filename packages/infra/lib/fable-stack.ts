@@ -18,9 +18,11 @@ import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import * as path from 'path';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import type { FableConfig } from './fable-config';
 
 export interface FableStackProps extends cdk.StackProps {
   stage: string;
+  config: Required<FableConfig>;
 }
 
 export class FableStack extends cdk.Stack {
@@ -40,7 +42,7 @@ export class FableStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: FableStackProps) {
     super(scope, id, props);
 
-    const { stage } = props;
+    const { stage, config } = props;
 
     // ============================================================
     // VPC for Aurora
@@ -95,7 +97,7 @@ export class FableStack extends cdk.Stack {
 
     // GitHub App credentials for FABLE build system (source control)
     const githubSecret = secretsmanager.Secret.fromSecretNameV2(
-      this, 'GitHubAppSecret', `fable/${stage}/github-app`
+      this, 'GitHubAppSecret', config.githubSecretName
     );
 
     this.auroraCluster = new rds.DatabaseCluster(this, 'AuroraCluster', {
@@ -671,7 +673,7 @@ export class FableStack extends cdk.Stack {
             'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
           },
           StringLike: {
-            'token.actions.githubusercontent.com:sub': 'repo:ForeverForwardFlow/FABLE-TOOLS:*',
+            'token.actions.githubusercontent.com:sub': `repo:${config.toolsRepo}:*`,
           },
         }
       ),
@@ -787,8 +789,8 @@ export class FableStack extends cdk.Stack {
     // Build Task Definition (Fargate)
     const buildTaskDefinition = new ecs.FargateTaskDefinition(this, 'BuildTaskDefinition', {
       family: `fable-${stage}-build`,
-      cpu: 4096,  // 4 vCPU
-      memoryLimitMiB: 16384,  // 16 GB - OI spawns worker claude processes that multiply memory
+      cpu: config.ecsCpuUnits,
+      memoryLimitMiB: config.ecsMemoryMiB,
       taskRole: buildTaskRole,
       executionRole: buildTaskExecutionRole,
     });
@@ -1025,7 +1027,7 @@ export class FableStack extends cdk.Stack {
       resultPath: '$.iterationState',
       result: sfn.Result.fromObject({
         iteration: 1,
-        maxIterations: 3,
+        maxIterations: config.maxBuildIterations,
       }),
     });
 
@@ -1163,7 +1165,7 @@ export class FableStack extends cdk.Stack {
         'orgId.$': '$.orgId',
         'iterationState': {
           'iteration.$': '$.enrichResult.iteration',
-          'maxIterations': 3,
+          'maxIterations': config.maxBuildIterations,
         },
       },
     });
@@ -1207,7 +1209,7 @@ export class FableStack extends cdk.Stack {
     // Check max iterations for retry loop
     const checkMaxIterations = new sfn.Choice(this, 'CheckMaxIterations')
       .when(
-        sfn.Condition.numberGreaterThan('$.enrichResult.iteration', 3),
+        sfn.Condition.numberGreaterThan('$.enrichResult.iteration', config.maxBuildIterations),
         formatQAExhaustedError
       )
       .otherwise(incrementIteration);

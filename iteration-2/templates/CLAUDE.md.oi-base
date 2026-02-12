@@ -790,7 +790,7 @@ echo "Pushed to $FABLE_GITHUB_REPO at commit $COMMIT_SHA"
 ```bash
 # For EACH Lambda tool, after the final build verification:
 TOOL_NAME="{tool-name}"
-ARTIFACTS_BUCKET="${ARTIFACTS_BUCKET:-fable-artifacts-dev-767398133785}"
+ARTIFACTS_BUCKET="${ARTIFACTS_BUCKET}"
 
 cd /tmp/fable-tools/tools/$TOOL_NAME
 

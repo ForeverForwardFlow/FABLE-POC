@@ -3,7 +3,7 @@
 > **Last Updated:** 2026-02-04
 > **Environment:** dev
 > **Region:** us-west-2
-> **Account:** 767398133785
+> **Account:** <AWS_ACCOUNT_ID>
 > **CDK Stack:** Fable-dev
 
 This document records all AWS resources deployed for FABLE's proof of concept.
@@ -70,29 +70,29 @@ FABLE's AWS infrastructure supports the autonomous build pipeline where:
 
 | Resource | ID | Notes |
 |----------|-----|-------|
-| VPC | `vpc-0273395bb46c8f714` | CIDR: 10.0.0.0/16 |
-| Internet Gateway | `igw-0ae33acef2fb7e4d5` | For public subnets |
-| NAT Gateway | `nat-0eb8a34adf2f20740` | For private subnet egress |
-| Elastic IP | `35.89.221.192` | NAT Gateway EIP |
+| VPC | `<VPC_ID>` | CIDR: 10.0.0.0/16 |
+| Internet Gateway | `<IGW_ID>` | For public subnets |
+| NAT Gateway | `<NAT_ID>` | For private subnet egress |
+| Elastic IP | `<NAT_EIP>` | NAT Gateway EIP |
 
 ### Subnets
 
 | Type | Subnet ID | AZ | Purpose |
 |------|-----------|-----|---------|
-| Public | `subnet-02bdee7be68376194` | us-west-2a | NAT Gateway, public resources |
-| Public | `subnet-0e18bdab8af5b5f73` | us-west-2b | Redundancy |
-| Private | `subnet-0b383fff4f3e86bba` | us-west-2a | ECS tasks, Lambda |
-| Private | `subnet-0292629ffa8d68966` | us-west-2b | Redundancy |
-| Isolated | `subnet-0aa54bac7c7169b19` | us-west-2a | Aurora (no internet) |
-| Isolated | `subnet-05a348f0b2aef50fe` | us-west-2b | Aurora redundancy |
+| Public | `<PUBLIC_SUBNET_1>` | us-west-2a | NAT Gateway, public resources |
+| Public | `<PUBLIC_SUBNET_2>` | us-west-2b | Redundancy |
+| Private | `<PRIVATE_SUBNET_1>` | us-west-2a | ECS tasks, Lambda |
+| Private | `<PRIVATE_SUBNET_2>` | us-west-2b | Redundancy |
+| Isolated | `<ISOLATED_SUBNET_1>` | us-west-2a | Aurora (no internet) |
+| Isolated | `<ISOLATED_SUBNET_2>` | us-west-2b | Aurora redundancy |
 
 ### Security Groups
 
 | Name | ID | Purpose |
 |------|-----|---------|
-| Aurora SG | `sg-05526dbb7585d22bc` | Database access |
-| Lambda SG | `sg-0a0d607d151bbaafc` | Lambda VPC access |
-| ECS Task SG | `sg-0a5d4c7fab0143398` | Build container network |
+| Aurora SG | `<AURORA_SG_ID>` | Database access |
+| Lambda SG | `<LAMBDA_SG_ID>` | Lambda VPC access |
+| ECS Task SG | `<ECS_TASK_SG_ID>` | Build container network |
 
 ---
 
@@ -103,7 +103,7 @@ FABLE's AWS infrastructure supports the autonomous build pipeline where:
 | Resource | Value |
 |----------|-------|
 | Cluster Name | `fable-dev-builds` |
-| Cluster ARN | `arn:aws:ecs:us-west-2:767398133785:cluster/fable-dev-builds` |
+| Cluster ARN | `arn:aws:ecs:us-west-2:<AWS_ACCOUNT_ID>:cluster/fable-dev-builds` |
 | Capacity Provider | FARGATE |
 
 ### Task Definition
@@ -114,7 +114,7 @@ FABLE's AWS infrastructure supports the autonomous build pipeline where:
 | CPU | 1024 (1 vCPU) |
 | Memory | 2048 MB |
 | Container Name | `fable-build` |
-| Image | `767398133785.dkr.ecr.us-west-2.amazonaws.com/fable-dev-build:latest` |
+| Image | `<AWS_ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/fable-dev-build:latest` |
 
 ### Container Configuration
 
@@ -140,7 +140,7 @@ FABLE's AWS infrastructure supports the autonomous build pipeline where:
 | Resource | Value |
 |----------|-------|
 | Repository Name | `fable-dev-build` |
-| Repository URI | `767398133785.dkr.ecr.us-west-2.amazonaws.com/fable-dev-build` |
+| Repository URI | `<AWS_ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/fable-dev-build` |
 | Current Tag | `latest` |
 
 ---
@@ -151,17 +151,17 @@ FABLE's AWS infrastructure supports the autonomous build pipeline where:
 
 | Function | ARN | Purpose |
 |----------|-----|---------|
-| `fable-dev-build-kickoff` | `arn:aws:lambda:us-west-2:767398133785:function:fable-dev-build-kickoff` | Start build pipelines |
-| `fable-dev-chat` | `arn:aws:lambda:us-west-2:767398133785:function:fable-dev-chat` | Conversational AI |
-| `fable-dev-connection-manager` | `arn:aws:lambda:us-west-2:767398133785:function:fable-dev-connection-manager` | WebSocket lifecycle |
-| `fable-dev-mcp-gateway` | `arn:aws:lambda:us-west-2:767398133785:function:fable-dev-mcp-gateway` | MCP protocol gateway |
+| `fable-dev-build-kickoff` | `arn:aws:lambda:us-west-2:<AWS_ACCOUNT_ID>:function:fable-dev-build-kickoff` | Start build pipelines |
+| `fable-dev-chat` | `arn:aws:lambda:us-west-2:<AWS_ACCOUNT_ID>:function:fable-dev-chat` | Conversational AI |
+| `fable-dev-connection-manager` | `arn:aws:lambda:us-west-2:<AWS_ACCOUNT_ID>:function:fable-dev-connection-manager` | WebSocket lifecycle |
+| `fable-dev-mcp-gateway` | `arn:aws:lambda:us-west-2:<AWS_ACCOUNT_ID>:function:fable-dev-mcp-gateway` | MCP protocol gateway |
 
 ### Support Lambdas
 
 | Function | ARN | Purpose |
 |----------|-----|---------|
-| `fable-dev-get-task-output` | `arn:aws:lambda:us-west-2:767398133785:function:fable-dev-get-task-output` | Retrieve ECS output from S3 |
-| `fable-dev-db-init` | `arn:aws:lambda:us-west-2:767398133785:function:fable-dev-db-init` | Aurora schema initialization |
+| `fable-dev-get-task-output` | `arn:aws:lambda:us-west-2:<AWS_ACCOUNT_ID>:function:fable-dev-get-task-output` | Retrieve ECS output from S3 |
+| `fable-dev-db-init` | `arn:aws:lambda:us-west-2:<AWS_ACCOUNT_ID>:function:fable-dev-db-init` | Aurora schema initialization |
 
 ### Lambda Configuration
 
@@ -180,7 +180,7 @@ All Lambdas use:
 | Resource | Value |
 |----------|-------|
 | Name | `fable-dev-build-pipeline` |
-| ARN | `arn:aws:states:us-west-2:767398133785:stateMachine:fable-dev-build-pipeline` |
+| ARN | `arn:aws:states:us-west-2:<AWS_ACCOUNT_ID>:stateMachine:fable-dev-build-pipeline` |
 | Type | Standard |
 | Timeout | 1 hour |
 | Log Group | `/aws/stepfunctions/fable-dev-build-pipeline` |
@@ -241,12 +241,12 @@ ECS tasks communicate results via S3:
 
 | Resource | Value |
 |----------|-------|
-| Cluster Identifier | `fable-dev-auroracluster23d869c0-nnntnq1kxlyj` |
-| Endpoint | `fable-dev-auroracluster23d869c0-nnntnq1kxlyj.cluster-czywkg2aepqq.us-west-2.rds.amazonaws.com` |
+| Cluster Identifier | `<AURORA_CLUSTER_ID>` |
+| Endpoint | `<AURORA_ENDPOINT>` |
 | Port | 5432 |
 | Database | `fable` |
 | Engine | PostgreSQL 15.x with pgvector |
-| Instance | `fable-dev-auroraclusterwriter499c523e-jct5hbs1xpvb` |
+| Instance | `<AURORA_INSTANCE_ID>` |
 | Min ACU | 0.5 |
 | Max ACU | 2 |
 
@@ -309,7 +309,7 @@ interface Build {
 
 | Resource | Value |
 |----------|-------|
-| Bucket Name | `fable-artifacts-dev-767398133785` |
+| Bucket Name | `fable-artifacts-dev-<AWS_ACCOUNT_ID>` |
 | Region | us-west-2 |
 | Versioning | Disabled |
 | Lifecycle | Auto-delete on stack removal (dev only) |
@@ -317,7 +317,7 @@ interface Build {
 #### Bucket Structure
 
 ```
-fable-artifacts-dev-767398133785/
+fable-artifacts-dev-<AWS_ACCOUNT_ID>/
 ├── builds/
 │   └── {buildId}/
 │       ├── core-output.json    # CORE phase output
@@ -334,9 +334,9 @@ fable-artifacts-dev-767398133785/
 
 | Resource | Value |
 |----------|-------|
-| API ID | `f9qynczzkj` |
+| API ID | `<API_GATEWAY_ID>` |
 | Stage | `dev` |
-| Endpoint | `wss://f9qynczzkj.execute-api.us-west-2.amazonaws.com/dev` |
+| Endpoint | `<WEBSOCKET_URL>` |
 
 #### Routes
 
@@ -351,7 +351,7 @@ fable-artifacts-dev-767398133785/
 | Resource | Value |
 |----------|-------|
 | Function | `fable-dev-mcp-gateway` |
-| URL | `https://zwbqvnkmw74c7h4ultiqx3ql6a0ccjci.lambda-url.us-west-2.on.aws/` |
+| URL | `<LAMBDA_FUNCTION_URL>` |
 | Auth | None (public) |
 | CORS | Enabled |
 
@@ -363,7 +363,7 @@ fable-artifacts-dev-767398133785/
 
 | Secret | ARN |
 |--------|-----|
-| Aurora Credentials | `arn:aws:secretsmanager:us-west-2:767398133785:secret:fable/dev/aurora-credentials-dRiMlA` |
+| Aurora Credentials | `arn:aws:secretsmanager:us-west-2:<AWS_ACCOUNT_ID>:secret:fable/dev/aurora-credentials-<SECRET_SUFFIX>` |
 
 ### Key IAM Roles
 
@@ -390,17 +390,17 @@ The build task role has access to:
 
 | Service | URL |
 |---------|-----|
-| WebSocket API | `wss://f9qynczzkj.execute-api.us-west-2.amazonaws.com/dev` |
-| MCP Gateway | `https://zwbqvnkmw74c7h4ultiqx3ql6a0ccjci.lambda-url.us-west-2.on.aws/` |
-| Aurora | `fable-dev-auroracluster23d869c0-nnntnq1kxlyj.cluster-czywkg2aepqq.us-west-2.rds.amazonaws.com:5432` |
+| WebSocket API | `<WEBSOCKET_URL>` |
+| MCP Gateway | `<LAMBDA_FUNCTION_URL>` |
+| Aurora | `<AURORA_ENDPOINT>:5432` |
 
 ### Internal ARNs
 
 | Resource | ARN |
 |----------|-----|
-| Build State Machine | `arn:aws:states:us-west-2:767398133785:stateMachine:fable-dev-build-pipeline` |
-| Build Kickoff Lambda | `arn:aws:lambda:us-west-2:767398133785:function:fable-dev-build-kickoff` |
-| ECS Cluster | `arn:aws:ecs:us-west-2:767398133785:cluster/fable-dev-builds` |
+| Build State Machine | `arn:aws:states:us-west-2:<AWS_ACCOUNT_ID>:stateMachine:fable-dev-build-pipeline` |
+| Build Kickoff Lambda | `arn:aws:lambda:us-west-2:<AWS_ACCOUNT_ID>:function:fable-dev-build-kickoff` |
+| ECS Cluster | `arn:aws:ecs:us-west-2:<AWS_ACCOUNT_ID>:cluster/fable-dev-builds` |
 
 ---
 
@@ -450,9 +450,9 @@ cd packages/infra
 docker build --platform linux/amd64 -f build/Dockerfile -t fable-build ..
 
 # Tag and push to ECR
-aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin 767398133785.dkr.ecr.us-west-2.amazonaws.com
-docker tag fable-build:latest 767398133785.dkr.ecr.us-west-2.amazonaws.com/fable-dev-build:latest
-docker push 767398133785.dkr.ecr.us-west-2.amazonaws.com/fable-dev-build:latest
+aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin <AWS_ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com
+docker tag fable-build:latest <AWS_ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/fable-dev-build:latest
+docker push <AWS_ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/fable-dev-build:latest
 ```
 
 ---
@@ -476,12 +476,12 @@ docker push 767398133785.dkr.ecr.us-west-2.amazonaws.com/fable-dev-build:latest
 ```bash
 # Check latest build execution
 aws stepfunctions list-executions \
-  --state-machine-arn "arn:aws:states:us-west-2:767398133785:stateMachine:fable-dev-build-pipeline" \
+  --state-machine-arn "arn:aws:states:us-west-2:<AWS_ACCOUNT_ID>:stateMachine:fable-dev-build-pipeline" \
   --max-results 5
 
 # Get execution history
 aws stepfunctions get-execution-history \
-  --execution-arn "arn:aws:states:us-west-2:767398133785:execution:fable-dev-build-pipeline:{execution-name}"
+  --execution-arn "arn:aws:states:us-west-2:<AWS_ACCOUNT_ID>:execution:fable-dev-build-pipeline:{execution-name}"
 
 # Check ECS tasks
 aws ecs list-tasks --cluster fable-dev-builds

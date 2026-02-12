@@ -721,7 +721,7 @@ npx cdk deploy --require-approval never
 # Build and push Docker image
 docker buildx build \
   --platform linux/amd64 \
-  -t 767398133785.dkr.ecr.us-west-2.amazonaws.com/fable-dev-build:latest \
+  -t <AWS_ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/fable-dev-build:latest \
   -f packages/infra/build/Dockerfile . \
   --push
 ```

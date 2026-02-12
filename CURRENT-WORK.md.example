@@ -30,8 +30,8 @@ Full AWS deployment for the autonomous build pipeline:
 | MCP Gateway | ✅ Working | Function URL for tool calls |
 
 **Key URLs:**
-- WebSocket: `wss://f9qynczzkj.execute-api.us-west-2.amazonaws.com/dev`
-- MCP Gateway: `https://zwbqvnkmw74c7h4ultiqx3ql6a0ccjci.lambda-url.us-west-2.on.aws/`
+- WebSocket: `<WEBSOCKET_URL>`
+- MCP Gateway: `<LAMBDA_FUNCTION_URL>`
 
 **Documentation:** See `docs/aws-infrastructure.md` for complete resource inventory.
 
@@ -592,7 +592,7 @@ User Request → CORE → OI → Push to GitHub → GitHub Actions → Deploy La
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| GitHub App (Fable Build Bot) | ✅ Created | App ID: 2797220, Installation ID: 108039145 |
+| GitHub App (Fable Build Bot) | ✅ Created | App ID: <GITHUB_APP_ID>, Installation ID: <GITHUB_INSTALLATION_ID> |
 | FABLE-TOOLS repo | ✅ Created | ForeverForwardFlow/FABLE-TOOLS |
 | AWS Secrets Manager | ✅ Created | `fable/dev/github-app` with App credentials |
 | GitHub OIDC Provider | ✅ Deployed | IAM OIDC for GitHub Actions |
@@ -607,8 +607,8 @@ Add these secrets to the FABLE-TOOLS GitHub repo:
 
 | Secret Name | Value |
 |-------------|-------|
-| `AWS_DEPLOY_ROLE_ARN` | `arn:aws:iam::767398133785:role/fable-dev-github-deploy` |
-| `ARTIFACTS_BUCKET` | `fable-artifacts-dev-767398133785` |
+| `AWS_DEPLOY_ROLE_ARN` | `arn:aws:iam::<AWS_ACCOUNT_ID>:role/fable-dev-github-deploy` |
+| `ARTIFACTS_BUCKET` | `fable-artifacts-dev-<AWS_ACCOUNT_ID>` |
 
 **To add secrets:** Go to https://github.com/ForeverForwardFlow/FABLE-TOOLS/settings/secrets/actions
 
@@ -664,7 +664,7 @@ ECS Container (Claude Code)
     │
     ▼ HTTP (MCP JSON-RPC)
 Memory Lambda (fable-dev-memory)
-    │  Function URL: https://bnlppp4myvostpiie4pxtyrily0yzzik.lambda-url.us-west-2.on.aws/
+    │  Function URL: <LAMBDA_FUNCTION_URL>
     │
     ▼ pgvector semantic search
 Aurora PostgreSQL
@@ -690,7 +690,7 @@ Aurora PostgreSQL
 
 ### Memory Lambda URL
 ```
-https://bnlppp4myvostpiie4pxtyrily0yzzik.lambda-url.us-west-2.on.aws/
+<LAMBDA_FUNCTION_URL>
 ```
 
 ### Next Steps (Phase 4b - Future)

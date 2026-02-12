@@ -1,25 +1,26 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib/core';
 import { FableStack } from '../lib/fable-stack';
+import config from '../fable.config';
+import { resolveConfig } from '../lib/fable-config';
+
+const resolvedConfig = resolveConfig(config);
 
 const app = new cdk.App();
 
-// Environment configuration
 const env = {
   account: process.env.CDK_DEFAULT_ACCOUNT,
-  region: process.env.CDK_DEFAULT_REGION || 'us-west-2',
+  region: resolvedConfig.region,
 };
 
-// Stage from context or default to 'dev'
-const stage = app.node.tryGetContext('stage') || 'dev';
-
-new FableStack(app, `Fable-${stage}`, {
+new FableStack(app, `Fable-${resolvedConfig.stage}`, {
   env,
-  stage,
-  description: `FABLE infrastructure - ${stage} environment`,
+  stage: resolvedConfig.stage,
+  config: resolvedConfig,
+  description: `FABLE infrastructure - ${resolvedConfig.stage} environment`,
   tags: {
     Project: 'FABLE',
-    Stage: stage,
+    Stage: resolvedConfig.stage,
     ManagedBy: 'CDK',
   },
 });

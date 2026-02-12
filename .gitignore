@@ -8,7 +8,7 @@ dist/
 # CDK
 cdk.out/
 .cdk.staging/
-cdk.context.json
+**/cdk.context.json
 
 # Logs
 *.log
@@ -24,3 +24,22 @@ Thumbs.db
 
 # Local files
 .mcp.json
+**/fable.config.ts
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Claude local settings
+.claude/settings.local.json
+
+# Playwright screenshots
+.playwright-mcp/
+
+# Screenshots
+*.png
+
+# Operational docs (contain account-specific values)
+CURRENT-WORK.md
+docs/aws-infrastructure.md
