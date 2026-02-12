@@ -312,6 +312,7 @@ export class FableStack extends cdk.Stack {
       generateSecret: false,
       authFlows: {
         userSrp: true,
+        adminUserPassword: true, // For CLI/testing (disable in prod)
       },
       oAuth: {
         flows: { authorizationCodeGrant: true },
