@@ -208,7 +208,7 @@ export const handler = async (event: { action?: string }): Promise<{ statusCode:
     database: AURORA_DATABASE,
     user: credentials.username,
     password: credentials.password,
-    ssl: { rejectUnauthorized: false },
+    ssl: { rejectUnauthorized: true },
   });
 
   try {
@@ -258,7 +258,6 @@ export const handler = async (event: { action?: string }): Promise<{ statusCode:
       statusCode: 500,
       body: JSON.stringify({
         message: 'Error initializing schema',
-        error: String(error),
       }),
     };
   } finally {

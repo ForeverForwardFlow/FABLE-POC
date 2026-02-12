@@ -33,7 +33,7 @@ async function getPool(): Promise<Pool> {
       database: AURORA_DATABASE,
       user: credentials.username,
       password: credentials.password,
-      ssl: { rejectUnauthorized: false },
+      ssl: { rejectUnauthorized: true },
       max: 5,
       idleTimeoutMillis: 30000,
     });
@@ -374,7 +374,7 @@ export const handler = async (event: unknown): Promise<{ statusCode: number; bod
     return { ...result, headers: { 'Content-Type': 'application/json' } };
   } catch (error) {
     console.error('Error:', error);
-    return { statusCode: 500, body: JSON.stringify({ error: String(error) }), headers: { 'Content-Type': 'application/json' } };
+    return { statusCode: 500, body: JSON.stringify({ error: 'Internal server error' }), headers: { 'Content-Type': 'application/json' } };
   }
 };
 

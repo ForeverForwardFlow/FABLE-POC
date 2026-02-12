@@ -535,11 +535,7 @@ export class FableStack extends cdk.Stack {
 
     // Memory Lambda Function URL (for MCP access from ECS containers)
     const memoryFnUrl = memoryFn.addFunctionUrl({
-      authType: lambda.FunctionUrlAuthType.NONE, // Security via VPC isolation
-      cors: {
-        allowedOrigins: ['*'],
-        allowedMethods: [lambda.HttpMethod.POST],
-      },
+      authType: lambda.FunctionUrlAuthType.AWS_IAM,
     });
 
     new cdk.CfnOutput(this, 'MemoryLambdaUrl', {
@@ -698,12 +694,14 @@ export class FableStack extends cdk.Stack {
       resources: [`arn:aws:lambda:${this.region}:${this.account}:function:fable-${stage}-tool-*`],
     }));
 
-    // Function URL for MCP Gateway (NONE auth for browser access from frontend)
-    // Note: In production, consider adding API Gateway with Cognito auth
+    // Function URL for MCP Gateway (NONE auth — TODO: add API Gateway with Cognito for production)
     const mcpGatewayUrl = mcpGatewayFn.addFunctionUrl({
       authType: lambda.FunctionUrlAuthType.NONE,
       cors: {
-        allowedOrigins: ['*'],
+        allowedOrigins: [
+          `https://${frontendDistribution.distributionDomainName}`,
+          ...(stage !== 'prod' ? ['http://localhost:*'] : []),
+        ],
         allowedMethods: [lambda.HttpMethod.GET, lambda.HttpMethod.POST],
         allowedHeaders: ['content-type', 'authorization'],
       },
@@ -764,14 +762,14 @@ export class FableStack extends cdk.Stack {
     // Permission to invoke MCP Gateway (for dynamic tool access)
     mcpGatewayFn.grantInvokeUrl(buildTaskRole);
 
-    // CloudWatch Logs permissions
+    // CloudWatch Logs permissions (scoped to fable build log groups)
     buildTaskRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
         'logs:CreateLogStream',
         'logs:PutLogEvents',
       ],
-      resources: ['*'],
+      resources: [`arn:aws:logs:${this.region}:${this.account}:log-group:/ecs/fable-${stage}-*:*`],
     }));
 
     // ECS Task Execution Role (for pulling images, etc.)
@@ -910,18 +908,32 @@ export class FableStack extends cdk.Stack {
       bundling: bundlingOptions,
     });
 
-    // QA Orchestrator needs SSM permissions
+    // QA Orchestrator needs SSM permissions (scoped to QA instance + RunShellScript)
+    const qaInstanceArn = `arn:aws:ec2:${this.region}:${this.account}:instance/${qaInstance.instanceId}`;
     qaOrchestratorFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['ssm:SendCommand', 'ssm:GetCommandInvocation'],
-      resources: ['*'],
+      actions: ['ssm:SendCommand'],
+      resources: [
+        qaInstanceArn,
+        `arn:aws:ssm:${this.region}::document/AWS-RunShellScript`,
+      ],
+    }));
+    qaOrchestratorFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['ssm:GetCommandInvocation'],
+      resources: [`arn:aws:ssm:${this.region}:${this.account}:*`],
     }));
 
-    // QA Orchestrator needs EC2 permissions (start instance, check status)
+    // QA Orchestrator needs EC2 permissions (scoped to QA instance)
     qaOrchestratorFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['ec2:DescribeInstanceStatus', 'ec2:StartInstances'],
-      resources: ['*'],
+      actions: ['ec2:DescribeInstanceStatus'],
+      resources: ['*'], // DescribeInstanceStatus requires '*'
+    }));
+    qaOrchestratorFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['ec2:StartInstances'],
+      resources: [qaInstanceArn],
     }));
 
     // QA Orchestrator writes QA input to S3
@@ -1638,7 +1650,9 @@ else
   aws s3 cp ./qa-report.json "s3://\$ARTIFACTS_BUCKET/builds/\$BUILD_ID/qa-output-iter\${ITERATION}.json" 2>/dev/null || true
 fi
 
-# Cleanup old workspaces (keep last 5)
+# Cleanup credentials and old workspaces
+rm -f ~/.git-credentials 2>/dev/null || true
+git config --global --unset credential.helper 2>/dev/null || true
 cd /home/fable-qa
 ls -dt qa-* 2>/dev/null | tail -n +6 | xargs rm -rf 2>/dev/null || true
 

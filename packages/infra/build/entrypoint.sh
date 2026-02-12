@@ -60,9 +60,8 @@ setup_github_auth() {
     echo "https://x-access-token:$TOKEN@github.com" > ~/.git-credentials
     git config --global credential.helper store
 
-    # Export repo info for templates to use
+    # Export repo info for templates to use (token available via git credential helper)
     export FABLE_GITHUB_REPO="$(echo "$SECRET" | jq -r '.repoOwner')/$(echo "$SECRET" | jq -r '.repoName')"
-    export FABLE_GITHUB_TOKEN="$TOKEN"
 
     echo "GitHub auth configured for repo: $FABLE_GITHUB_REPO"
 }
@@ -312,3 +311,6 @@ else
         aws s3 cp ./output.json "s3://${ARTIFACTS_BUCKET}/${S3_KEY}"
     fi
 fi
+
+# Cleanup credentials
+rm -f ~/.git-credentials 2>/dev/null || true

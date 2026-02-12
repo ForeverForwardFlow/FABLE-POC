@@ -81,10 +81,11 @@ export const handler = async (event: LambdaEvent): Promise<{
         body: JSON.stringify(response.result),
       };
     } catch (error) {
+      console.error('MCP Gateway GET error:', error);
       return {
         statusCode: 500,
         headers,
-        body: JSON.stringify({ error: String(error) }),
+        body: JSON.stringify({ error: 'Internal server error' }),
       };
     }
   }
@@ -118,7 +119,7 @@ export const handler = async (event: LambdaEvent): Promise<{
         jsonrpc: '2.0',
         error: {
           code: -32603,
-          message: String(error),
+          message: 'Internal server error',
         },
       }),
     };

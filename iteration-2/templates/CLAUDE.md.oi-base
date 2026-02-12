@@ -56,7 +56,7 @@ grep -r "longestWord" /tmp/worker-*/src/ || echo "FAIL: longestWord not implemen
 
 ```bash
 # Clone the tools repo
-git clone --depth 1 https://x-access-token:$FABLE_GITHUB_TOKEN@github.com/$FABLE_GITHUB_REPO /tmp/fable-tools-check
+git clone --depth 1 https://github.com/$FABLE_GITHUB_REPO /tmp/fable-tools-check
 ```
 
 ### Step 2: Check if Tool Exists
@@ -660,14 +660,12 @@ After all workers complete successfully, push to GitHub. The CI/CD pipeline hand
 **CRITICAL Environment Variables:**
 - `FABLE_BUILD_ID` - The unique build ID (e.g., `e2c57fc2-cbb1-4c1f-8f1b-40a0f2528160`)
 - `FABLE_GITHUB_REPO` - The tools repo (e.g., `ForeverForwardFlow/FABLE-TOOLS`)
-- `FABLE_GITHUB_TOKEN` - Authenticated GitHub token (set by entrypoint)
-
 ### 1. Clone Tools Repo
 
-**Use the token in the URL for private repo access:**
+**Git credential helper is pre-configured — use plain HTTPS URLs:**
 
 ```bash
-git clone --depth 1 https://x-access-token:$FABLE_GITHUB_TOKEN@github.com/$FABLE_GITHUB_REPO /tmp/fable-tools
+git clone --depth 1 https://github.com/$FABLE_GITHUB_REPO /tmp/fable-tools
 cd /tmp/fable-tools
 ```
 
@@ -769,8 +767,6 @@ git checkout main
 git pull origin main
 git merge "fable/$FABLE_BUILD_ID" --no-edit
 
-# CRITICAL: Always set remote URL with token before pushing to ensure auth works
-git remote set-url origin "https://x-access-token:$FABLE_GITHUB_TOKEN@github.com/$FABLE_GITHUB_REPO"
 git push origin main
 ```
 

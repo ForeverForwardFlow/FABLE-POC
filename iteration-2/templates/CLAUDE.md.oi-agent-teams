@@ -25,7 +25,7 @@ Before anything else, check if the tool already exists in GitHub:
 
 ```bash
 TOOL_NAME="{tool-name-from-spec}"
-git clone --depth 1 https://x-access-token:$FABLE_GITHUB_TOKEN@github.com/$FABLE_GITHUB_REPO /tmp/fable-tools-check
+git clone --depth 1 https://github.com/$FABLE_GITHUB_REPO /tmp/fable-tools-check
 
 if [ -d "/tmp/fable-tools-check/tools/$TOOL_NAME" ]; then
     echo "=== EXTENSION MODE ==="
@@ -164,7 +164,7 @@ npm run test    # Must exit 0
 After successful integration:
 
 ```bash
-git clone --depth 1 https://x-access-token:$FABLE_GITHUB_TOKEN@github.com/$FABLE_GITHUB_REPO /tmp/fable-tools
+git clone --depth 1 https://github.com/$FABLE_GITHUB_REPO /tmp/fable-tools
 cd /tmp/fable-tools
 git checkout -b "fable/$FABLE_BUILD_ID"
 
@@ -181,7 +181,6 @@ git add tools/
 git commit -m "feat: Add tools via FABLE build $FABLE_BUILD_ID"
 git checkout main && git pull origin main
 git merge "fable/$FABLE_BUILD_ID" --no-edit
-git remote set-url origin "https://x-access-token:$FABLE_GITHUB_TOKEN@github.com/$FABLE_GITHUB_REPO"
 git push origin main
 ```
 
