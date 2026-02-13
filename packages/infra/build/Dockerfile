@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
     unzip \
+    zip \
     jq \
     openssl \
     # Playwright browser dependencies
@@ -38,8 +39,8 @@ RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2
     && ./aws/install \
     && rm -rf awscliv2.zip aws
 
-# Install Claude Code CLI and Playwright MCP
-RUN npm install -g @anthropic-ai/claude-code @playwright/mcp
+# Install Claude Code CLI, Playwright MCP, and Playwright test runner
+RUN npm install -g @anthropic-ai/claude-code @playwright/mcp @playwright/test
 
 # Install Playwright browsers (Chromium only to save space)
 RUN npx @playwright/mcp install-browsers chromium || npx playwright install chromium || true
@@ -51,8 +52,8 @@ RUN groupadd -r fable && useradd -r -g fable -d /fable -s /bin/bash fable
 WORKDIR /fable
 RUN mkdir -p /fable/work /fable/templates && chown -R fable:fable /fable
 
-# Copy FABLE templates from iteration-2 (build context is FABLE repo root)
-COPY --chown=fable:fable iteration-2/templates/ /fable/templates/
+# Copy active FABLE templates (build context is FABLE repo root)
+COPY --chown=fable:fable templates/ /fable/templates/
 
 # Build MCP Memory Sidecar (stdio bridge to Memory Lambda)
 COPY packages/infra/mcp-sidecar/package*.json /fable/mcp-sidecar/
@@ -80,7 +81,7 @@ USER fable
 
 # The build spec and phase are passed via environment variables:
 # - FABLE_BUILD_SPEC: JSON spec from CORE or the build request
-# - FABLE_PHASE: "core", "oi", or "worker"
+# - FABLE_PHASE: "builder"
 # - FABLE_WORK_DIR: Where to do the work (default /fable/work)
 
 ENTRYPOINT ["/fable/entrypoint.sh"]

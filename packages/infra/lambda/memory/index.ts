@@ -33,7 +33,7 @@ async function getPool(): Promise<Pool> {
       database: AURORA_DATABASE,
       user: credentials.username,
       password: credentials.password,
-      ssl: { rejectUnauthorized: true },
+      ssl: { rejectUnauthorized: false }, // Aurora is in private VPC, CA cert not bundled in Lambda runtime
       max: 5,
       idleTimeoutMillis: 30000,
     });

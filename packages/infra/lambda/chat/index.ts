@@ -17,11 +17,13 @@ const lambdaClient = new LambdaClient({});
 const schedulerClient = new SchedulerClient({});
 
 const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE!;
+const CONVERSATIONS_TABLE = process.env.CONVERSATIONS_TABLE!;
 const TOOLS_TABLE = process.env.TOOLS_TABLE!;
 const WORKFLOWS_TABLE = process.env.WORKFLOWS_TABLE!;
 const WEBSOCKET_ENDPOINT = process.env.WEBSOCKET_ENDPOINT!;
 const MEMORY_LAMBDA_ARN = process.env.MEMORY_LAMBDA_ARN!;
 const WORKFLOW_EXECUTOR_ARN = process.env.WORKFLOW_EXECUTOR_ARN!;
+const BUILD_KICKOFF_ARN = process.env.BUILD_KICKOFF_ARN!;
 const SCHEDULER_ROLE_ARN = process.env.SCHEDULER_ROLE_ARN!;
 const STAGE = process.env.STAGE!;
 
@@ -192,8 +194,8 @@ export const handler = async (event: ChatEvent): Promise<void> => {
             let toolResult: unknown;
 
             if (block.name.startsWith('fable_')) {
-              // Internal workflow tool — dispatch locally
-              toolResult = await handleInternalTool(block.name, block.input || {}, orgId, userId, connectionId);
+              // Internal tool — dispatch locally
+              toolResult = await handleInternalTool(block.name, block.input || {}, orgId, userId, connectionId, context.conversationId);
             } else {
               // External tool — invoke via Function URL
               const tool = tools.find(t => t.schema.name === block.name);
@@ -232,12 +234,17 @@ export const handler = async (event: ChatEvent): Promise<void> => {
       }
     }
 
-    // Send completion signal
+    // Send completion signal (include conversationId so client can persist it for follow-ups)
     await sendToConnection(connectionId, {
       type: 'chat_complete',
-      payload: { messageId, fullContent, intent: intent.type },
+      payload: { messageId, fullContent, intent: intent.type, conversationId: context.conversationId },
       requestId,
     });
+
+    // Save assistant response to conversation history
+    if (fullContent && context.conversationId) {
+      await saveAssistantMessage(userId, context.conversationId, fullContent);
+    }
 
     console.log(`Chat response complete for ${connectionId}, length: ${fullContent.length}`);
   } catch (error) {
@@ -400,24 +407,68 @@ function buildSystemPrompt(
   intent: ChatEvent['intent'],
   tools: FableTool[] = []
 ): string {
-  let prompt = `You are FABLE, a friendly AI assistant that can build tools and automate workflows.
-
-## Your Capabilities
-- General conversation and explanations
-- Building MCP tools on request (tell users to say "build me a..." to start a build)
-- Using existing tools (you have ${tools.length} tools available)
-- Creating and managing workflows (scheduled or manual automation using your tools)
-- Remembering user preferences and context
+  let prompt = `You are FABLE, a friendly AI assistant that helps people build software tools through conversation.
 
 ## Your Personality
-- Helpful and concise
-- Enthusiastic about building tools
-- Technical but approachable
+- Warm, patient, and encouraging — especially with non-technical users
+- Enthusiastic about helping people build things
+- You explain technical concepts in simple terms when needed
+- Concise but thorough — don't rush, but don't over-explain
+
+## Your Capabilities
+- Building custom tools on request (via conversational requirement gathering)
+- Using existing tools you've already built (you have ${tools.length} tools available)
+- Creating and managing workflows (scheduled or manual automation using your tools)
+- General conversation, explanations, and help
+
+## Building Tools — Conversational Requirement Gathering
+
+When a user wants to build a tool, your job is to help them articulate exactly what they need through natural conversation. Many users are non-technical and may not know exactly what they want — that's fine! Guide them.
+
+### The Process
+1. **Understand the goal** — Ask what problem they're trying to solve, not just what they want built
+2. **Ask clarifying questions** — Help them think through inputs, outputs, and edge cases
+3. **Offer concrete examples** — Show them what the tool might look like with specific examples
+4. **Summarize and confirm** — Before building, restate what you'll build and get explicit confirmation
+5. **Build it** — Call fable_start_build with a well-structured specification
+
+### Guidelines
+- Ask 2-4 clarifying questions, not 10. Find the sweet spot between thorough and overwhelming.
+- If the user seems to know what they want, don't over-question — move to confirmation faster
+- If the user is vague, offer 2-3 concrete options to choose from rather than open-ended questions
+- Always confirm before building — say something like "Here's what I'll build: [summary]. Sound good?"
+- When the user confirms, call fable_start_build immediately — don't ask more questions
+
+### Example Conversation
+User: "I need something to check my writing"
+You: "I'd love to help build that! What kind of checks are most important to you? For example:
+- **Readability** — Is the text easy to understand? (grade level, sentence complexity)
+- **Grammar & spelling** — Catch typos and grammatical errors
+- **Tone analysis** — Is it formal, casual, friendly, etc.?
+
+Or something else entirely?"
+
+User: "readability would be great"
+You: "Got it — a readability checker! A couple quick questions:
+1. Should it give a simple score (like 'easy / medium / hard') or detailed metrics (reading grade level, average sentence length, etc.)?
+2. Should it work with any text you paste in, or is it for specific formats like emails or reports?"
+
+User: "simple score is fine, and any text"
+You: "Perfect! Here's what I'll build:
+
+**Text Readability Checker**
+- Input: Any text
+- Output: A readability score (easy/medium/hard) with a brief explanation
+- It'll analyze sentence length, word complexity, and overall structure
+
+Sound good? I'll start building it right away."
+
+User: "yes!"
+→ [Call fable_start_build with structured spec]
 
 ## Current Context
 - Conversation has ${context.messages.length} previous messages
-- Active build: ${context.activeBuildId || 'none'}
-- Detected intent: ${intent.type} (${Math.round(intent.confidence * 100)}% confidence)`;
+- Active build: ${context.activeBuildId || 'none'}`;
 
   if (tools.length > 0) {
     prompt += `
@@ -443,7 +494,7 @@ The user's message was ambiguous. Ask clarifying questions to understand what th
 
   prompt += `
 
-Be helpful, concise, and friendly. Use your tools when they're relevant to the user's request. If the user wants to build something new, acknowledge their request and let them know the build will start.`;
+Be helpful, concise, and friendly. Use your tools when they're relevant to the user's request.`;
 
   return prompt;
 }
@@ -569,6 +620,28 @@ const INTERNAL_WORKFLOW_TOOLS: BedrockTool[] = [
       required: ['workflow_id', 'action'],
     },
   },
+  {
+    name: 'fable_start_build',
+    description: 'Start building a new tool after gathering requirements from the user. Call this when you have a clear understanding of what the user wants built and they have confirmed the requirements. Include a structured specification.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Tool name in kebab-case (e.g. "text-readability-checker")' },
+        description: { type: 'string', description: 'Clear, detailed description of what the tool does, including expected behavior' },
+        schema: {
+          type: 'object',
+          description: 'MCP tool schema defining the tool interface',
+          properties: {
+            name: { type: 'string', description: 'Tool name (same as above)' },
+            description: { type: 'string', description: 'Tool description for MCP discovery' },
+            inputSchema: { type: 'object', description: 'JSON Schema for tool inputs (properties, required fields, types, descriptions)' },
+          },
+          required: ['name', 'description', 'inputSchema'],
+        },
+      },
+      required: ['name', 'description', 'schema'],
+    },
+  },
 ];
 
 async function handleInternalTool(
@@ -577,6 +650,7 @@ async function handleInternalTool(
   orgId: string,
   userId: string,
   connectionId: string,
+  conversationId?: string,
 ): Promise<unknown> {
   switch (toolName) {
     case 'fable_create_workflow':
@@ -593,6 +667,8 @@ async function handleInternalTool(
       return handleRunWorkflow(input, orgId, userId, connectionId);
     case 'fable_pause_workflow':
       return handlePauseWorkflow(input, orgId);
+    case 'fable_start_build':
+      return handleStartBuild(input, orgId, userId, connectionId, conversationId);
     default:
       throw new Error(`Unknown internal tool: ${toolName}`);
   }
@@ -885,6 +961,112 @@ async function handleRunWorkflow(
     message: `Workflow "${existing.Item.name}" is now running. You'll be notified when it completes.`,
     workflowId,
   };
+}
+
+async function handleStartBuild(
+  input: Record<string, unknown>,
+  orgId: string,
+  userId: string,
+  connectionId: string,
+  conversationId?: string,
+): Promise<unknown> {
+  const name = input.name as string;
+  const description = input.description as string;
+  const schema = input.schema as Record<string, unknown>;
+
+  console.log(`Starting build for tool: ${name}`);
+
+  // Build a rich request string that includes the structured spec
+  const request = `Build an MCP tool called "${name}".
+
+Description: ${description}
+
+MCP Schema:
+${JSON.stringify(schema, null, 2)}`;
+
+  // Invoke build-kickoff Lambda
+  const response = await lambdaClient.send(new InvokeCommand({
+    FunctionName: BUILD_KICKOFF_ARN,
+    Payload: JSON.stringify({
+      action: 'start',
+      payload: {
+        request,
+        userId,
+        orgId,
+        conversationId,
+      },
+    }),
+  }));
+
+  if (response.Payload) {
+    const result = JSON.parse(new TextDecoder().decode(response.Payload));
+    const body = JSON.parse(result.body);
+
+    if (body.success) {
+      // Update conversation with active build ID
+      if (conversationId) {
+        try {
+          await docClient.send(new UpdateCommand({
+            TableName: CONVERSATIONS_TABLE,
+            Key: { PK: `USER#${userId}`, SK: `CONV#${conversationId}` },
+            UpdateExpression: 'SET activeBuildId = :buildId, updatedAt = :now',
+            ExpressionAttributeValues: {
+              ':buildId': body.buildId,
+              ':now': new Date().toISOString(),
+            },
+          }));
+        } catch (err) {
+          console.error('Failed to update conversation with buildId:', err);
+        }
+      }
+
+      // Notify client about build start
+      await sendToConnection(connectionId, {
+        type: 'build_started',
+        payload: { buildId: body.buildId, toolName: name },
+      });
+
+      return {
+        success: true,
+        buildId: body.buildId,
+        message: `Build started for "${name}". I'll notify you when it's ready.`,
+      };
+    }
+
+    return { success: false, error: body.error || 'Failed to start build' };
+  }
+
+  return { success: false, error: 'No response from build kickoff' };
+}
+
+async function saveAssistantMessage(userId: string, conversationId: string, content: string): Promise<void> {
+  try {
+    const existing = await docClient.send(new GetCommand({
+      TableName: CONVERSATIONS_TABLE,
+      Key: { PK: `USER#${userId}`, SK: `CONV#${conversationId}` },
+    }));
+
+    if (!existing.Item) return;
+
+    const now = new Date().toISOString();
+    const messages = (existing.Item.messages || []) as Array<{ role: string; content: string; timestamp: string }>;
+    messages.push({ role: 'assistant', content, timestamp: now });
+
+    // Cap at last 50 messages
+    const capped = messages.slice(-50);
+
+    await docClient.send(new UpdateCommand({
+      TableName: CONVERSATIONS_TABLE,
+      Key: { PK: `USER#${userId}`, SK: `CONV#${conversationId}` },
+      UpdateExpression: 'SET messages = :msgs, updatedAt = :now',
+      ExpressionAttributeValues: {
+        ':msgs': capped,
+        ':now': now,
+      },
+    }));
+  } catch (error) {
+    console.error('Error saving assistant message:', error);
+  }
 }
 
 async function handlePauseWorkflow(input: Record<string, unknown>, orgId: string): Promise<unknown> {

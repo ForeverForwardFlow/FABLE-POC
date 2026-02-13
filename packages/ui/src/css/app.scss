@@ -1,0 +1,214 @@
+// Satoshi font from Fontshare
+@import url('https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap');
+
+// Dark theme body
+body {
+  background-color: var(--ff-bg-primary);
+  color: var(--ff-text-primary);
+  font-family: 'Satoshi', 'Inter', -apple-system, sans-serif;
+}
+
+// Custom scrollbar
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--ff-bg-secondary);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--ff-border-light);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ff-text-muted);
+}
+
+// Button styles
+.ff-btn-primary {
+  background: var(--ff-gradient-button);
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: var(--ff-radius-md);
+  font-weight: 500;
+  cursor: pointer;
+  transition: box-shadow 0.2s ease;
+  &:hover {
+    box-shadow: var(--ff-glow-purple);
+  }
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+.ff-btn-secondary {
+  background: var(--ff-bg-tertiary);
+  color: var(--ff-text-primary);
+  border: 1px solid var(--ff-border-light);
+  padding: 10px 20px;
+  border-radius: var(--ff-radius-md);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s ease;
+  &:hover {
+    background: var(--ff-bg-card);
+  }
+}
+
+// Message bubbles
+.user-message {
+  background: var(--ff-gradient-purple);
+  color: white;
+  padding: 12px 16px;
+  border-radius: var(--ff-radius-lg);
+  border-bottom-right-radius: var(--ff-radius-sm);
+  max-width: 80%;
+  margin-left: auto;
+}
+
+.assistant-message {
+  background: var(--ff-bg-card);
+  color: var(--ff-text-primary);
+  padding: 12px 16px;
+  border-radius: var(--ff-radius-lg);
+  border-bottom-left-radius: var(--ff-radius-sm);
+  max-width: 80%;
+  border: 1px solid var(--ff-border);
+}
+
+// Progress bar
+.fable-progress {
+  width: 100%;
+  height: 6px;
+  background: var(--ff-bg-tertiary);
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 8px 0;
+
+  &__fill {
+    height: 100%;
+    background: var(--ff-gradient-purple);
+    border-radius: 3px;
+    transition: width 0.3s ease;
+  }
+}
+
+// Phase badges
+.fable-phase {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: var(--ff-radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+
+  &--planning { background: rgba(59, 130, 246, 0.2); color: #3b82f6; }
+  &--building { background: rgba(168, 85, 247, 0.2); color: #a855f7; }
+  &--testing { background: rgba(20, 184, 166, 0.2); color: #14b8a6; }
+  &--deploying { background: rgba(249, 115, 22, 0.2); color: #f97316; }
+  &--complete { background: rgba(34, 197, 94, 0.2); color: #22c55e; }
+  &--error { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
+}
+
+// Checklist
+.fable-checklist {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+
+  &__item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    color: var(--ff-text-secondary);
+    font-size: 14px;
+
+    &--checked {
+      color: var(--ff-teal);
+    }
+  }
+}
+
+// Card styles
+.ff-card {
+  background: var(--ff-bg-card);
+  border: 1px solid var(--ff-border);
+  border-radius: var(--ff-radius-lg);
+  padding: 16px;
+}
+
+// Input styles
+.ff-input {
+  background: var(--ff-bg-secondary);
+  border: 1px solid var(--ff-border);
+  border-radius: var(--ff-radius-md);
+  padding: 12px 16px;
+  color: var(--ff-text-primary);
+  font-family: inherit;
+  font-size: 14px;
+  width: 100%;
+  resize: none;
+
+  &:focus {
+    outline: none;
+    border-color: var(--ff-purple);
+  }
+
+  &::placeholder {
+    color: var(--ff-text-muted);
+  }
+}
+
+// Sidebar
+.ff-sidebar {
+  background: var(--ff-bg-secondary);
+  border-right: 1px solid var(--ff-border);
+  width: 240px;
+  height: 100%;
+  overflow-y: auto;
+}
+
+// Markdown content
+.markdown-content {
+  line-height: 1.6;
+
+  code {
+    background: var(--ff-bg-tertiary);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'SF Mono', Monaco, monospace;
+    font-size: 13px;
+  }
+
+  pre {
+    background: var(--ff-bg-tertiary);
+    padding: 12px;
+    border-radius: var(--ff-radius-sm);
+    overflow-x: auto;
+
+    code {
+      background: none;
+      padding: 0;
+    }
+  }
+}
+
+// Streaming cursor animation
+.streaming-cursor {
+  display: inline-block;
+  width: 8px;
+  height: 16px;
+  background: var(--ff-purple);
+  margin-left: 2px;
+  animation: blink 1s infinite;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}

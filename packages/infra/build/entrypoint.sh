@@ -183,13 +183,12 @@ fi
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
 
-# Handle S3-based buildSpec (used for enriched retry specs from QA feedback loop)
+# Handle S3-based buildSpec (if spec is too large for env var)
 if [[ "$BUILD_SPEC" == s3://* ]]; then
-    echo "=== Downloading enriched build spec from S3 ==="
+    echo "=== Downloading build spec from S3 ==="
     echo "Source: $BUILD_SPEC"
     aws s3 cp "$BUILD_SPEC" ./build-spec.json
     BUILD_SPEC=$(cat ./build-spec.json)
-    echo "Downloaded enriched spec (iteration $(echo "$BUILD_SPEC" | jq -r '.iteration // 1'))"
 fi
 
 # Copy MCP config to work directory
@@ -202,31 +201,16 @@ if [ ! -d ".git" ]; then
     git config user.name "FABLE"
 fi
 
-# Copy the appropriate CLAUDE.md template
+# Copy the CLAUDE.md template
 case "$PHASE" in
-    core)
-        cp /fable/templates/CLAUDE.md.core-base ./CLAUDE.md
+    builder)
+        cp /fable/templates/CLAUDE.md.builder ./CLAUDE.md
         echo ""
-        echo "=== Running FABLE-CORE ==="
-        ;;
-    oi)
-        cp /fable/templates/CLAUDE.md.oi-base ./CLAUDE.md
-        echo ""
-        echo "=== Running FABLE-OI ==="
-        ;;
-    worker)
-        cp /fable/templates/CLAUDE.md.worker-base ./CLAUDE.md
-        echo ""
-        echo "=== Running FABLE-Worker ==="
-        ;;
-    qa)
-        cp /fable/templates/CLAUDE.md.qa ./CLAUDE.md
-        echo ""
-        echo "=== Running FABLE-QA ==="
+        echo "=== Running FABLE-Builder ==="
         ;;
     *)
         echo "ERROR: Unknown phase: $PHASE"
-        echo "Valid phases: core, oi, worker, qa"
+        echo "Valid phases: builder"
         exit 1
         ;;
 esac
@@ -244,26 +228,13 @@ echo "=== Starting Claude Code ==="
 echo "Build spec: $(echo $BUILD_SPEC | head -c 200)..."
 echo ""
 
-# For CORE phase: one-shot execution that creates specs and templates
-# For OI phase: runs the orchestration loop (manages workers)
-# For Worker phase: implements specific tasks
-
-# Debug: Show claude version and help
+# Debug: Show claude version
 echo "Claude CLI version:"
 claude --version || echo "Could not get version"
 echo ""
 
-# Set the prompt based on phase
-if [ "$PHASE" = "core" ]; then
-    # CORE is one-shot - creates the decomposition
-    PROMPT="Read build-spec.json and execute the CORE phase as described in CLAUDE.md. Output the result to output.json"
-elif [ "$PHASE" = "oi" ]; then
-    # OI runs the Ralph Wiggum loop until done or stopped
-    PROMPT="Read build-spec.json and execute the OI phase as described in CLAUDE.md. Spawn workers as needed. Output the final result to output.json"
-else
-    # Worker implements a specific task
-    PROMPT="Read build-spec.json and implement the task as described in CLAUDE.md. Output the result to output.json"
-fi
+# Builder prompt
+PROMPT="Read build-spec.json and implement the task as described in CLAUDE.md. Output the result to output.json"
 
 echo "Running Claude with prompt: $PROMPT"
 echo ""
@@ -284,7 +255,7 @@ if [ -f ./output.json ]; then
     echo "=== Build Complete ==="
     cat ./output.json
 
-    # Upload output to S3 for Step Functions to retrieve
+    # Upload output to S3 for build-completion Lambda to retrieve
     if [ -n "$ARTIFACTS_BUCKET" ] && [ -n "$FABLE_BUILD_ID" ]; then
         S3_KEY="builds/${FABLE_BUILD_ID}/${PHASE}-output.json"
         echo ""

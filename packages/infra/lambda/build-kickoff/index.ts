@@ -1,13 +1,16 @@
-import { SFNClient, StartExecutionCommand } from '@aws-sdk/client-sfn';
+import { ECSClient, RunTaskCommand } from '@aws-sdk/client-ecs';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { randomUUID } from 'crypto';
 
-const sfnClient = new SFNClient({});
+const ecsClient = new ECSClient({});
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
 
-const STATE_MACHINE_ARN = process.env.STATE_MACHINE_ARN!;
+const BUILD_CLUSTER_ARN = process.env.BUILD_CLUSTER_ARN!;
+const BUILD_TASK_DEF = process.env.BUILD_TASK_DEF!;
+const BUILD_SUBNETS = process.env.BUILD_SUBNETS!;
+const BUILD_SECURITY_GROUP = process.env.BUILD_SECURITY_GROUP!;
 const BUILDS_TABLE = process.env.BUILDS_TABLE!;
 const STAGE = process.env.STAGE || 'dev';
 
@@ -21,6 +24,8 @@ interface BuildRequest {
   orgId?: string;
   // Optional: conversation ID for context
   conversationId?: string;
+  // Optional: connection ID for WebSocket notifications
+  connectionId?: string;
 }
 
 interface BuildKickoffEvent {
@@ -55,17 +60,18 @@ async function startBuild(request: BuildRequest): Promise<{ statusCode: number; 
     userId = '00000000-0000-0000-0000-000000000001',
     orgId = '00000000-0000-0000-0000-000000000001',
     conversationId,
+    connectionId,
   } = request;
 
   console.log(`Starting build: ${buildId}`);
   console.log(`Request: ${buildRequest}`);
 
-  // Create the build spec for the container (filter out undefined values)
+  // Create the build spec for the container
   const buildSpec = spec || Object.fromEntries(
     Object.entries({ request: buildRequest, conversationId }).filter(([, v]) => v !== undefined)
   );
 
-  // Record build in DynamoDB (filter out undefined values)
+  // Record build in DynamoDB
   const item: Record<string, unknown> = {
     PK: `ORG#${orgId}`,
     SK: `BUILD#${buildId}`,
@@ -81,46 +87,55 @@ async function startBuild(request: BuildRequest): Promise<{ statusCode: number; 
     GSI1SK: `BUILD#${now}`,
   };
   if (conversationId) item.conversationId = conversationId;
+  if (connectionId) item.connectionId = connectionId;
 
   await docClient.send(new PutCommand({
     TableName: BUILDS_TABLE,
     Item: item,
   }));
 
-  // Start Step Functions execution
-  const executionName = `build-${buildId.slice(0, 8)}-${Date.now()}`;
-
-  await sfnClient.send(new StartExecutionCommand({
-    stateMachineArn: STATE_MACHINE_ARN,
-    name: executionName,
-    input: JSON.stringify({
-      buildId,
-      buildSpec: JSON.stringify(buildSpec),
-      userId,
-      orgId,
-      conversationId,
-    }),
+  // Start ECS builder task directly
+  const taskResult = await ecsClient.send(new RunTaskCommand({
+    cluster: BUILD_CLUSTER_ARN,
+    taskDefinition: BUILD_TASK_DEF,
+    launchType: 'FARGATE',
+    networkConfiguration: {
+      awsvpcConfiguration: {
+        subnets: BUILD_SUBNETS.split(','),
+        securityGroups: [BUILD_SECURITY_GROUP],
+        assignPublicIp: 'DISABLED',
+      },
+    },
+    overrides: {
+      containerOverrides: [{
+        name: 'fable-build',
+        environment: [
+          { name: 'FABLE_PHASE', value: 'builder' },
+          { name: 'FABLE_BUILD_SPEC', value: JSON.stringify(buildSpec) },
+          { name: 'FABLE_BUILD_ID', value: buildId },
+        ],
+      }],
+    },
+    startedBy: `fable-build:${buildId}`,
+    count: 1,
   }));
 
-  // Note: iteration tracking (iteration, maxIterations) is initialized by
-  // the InitBuild Pass state in Step Functions, not here.
-
-  console.log(`Build started: ${buildId}, execution: ${executionName}`);
+  const taskArn = taskResult.tasks?.[0]?.taskArn;
+  console.log(`Build started: ${buildId}, ECS task: ${taskArn}`);
 
   return {
     statusCode: 200,
     body: JSON.stringify({
       success: true,
       buildId,
+      taskArn,
       status: 'pending',
-      message: 'Build started. Use status action to check progress.',
+      message: 'Build started. You will be notified when complete.',
     }),
   };
 }
 
 async function getBuildStatus(buildId: string): Promise<{ statusCode: number; body: string }> {
-  // For now, just return that we'd query DynamoDB
-  // Full implementation would query the builds table
   return {
     statusCode: 200,
     body: JSON.stringify({

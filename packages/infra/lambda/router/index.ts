@@ -1,6 +1,6 @@
 import { APIGatewayProxyHandler, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { ApiGatewayManagementApiClient, PostToConnectionCommand } from '@aws-sdk/client-apigatewaymanagementapi';
 import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
@@ -59,11 +59,11 @@ export const handler: APIGatewayProxyHandler = async (event): Promise<APIGateway
       const context = await loadConversationContext(connection.userId, message.payload.conversationId);
 
       // Classify intent with hard overrides for known patterns
-      // Priority: "build me" > workflow keyword > Bedrock classification
+      // Build requests route through Chat for conversational requirement gathering
       let intent: Intent;
-      if (/^build\s+me\b/i.test(content)) {
-        // Explicit "build me" requests are always BUILD — Haiku often misclassifies these as CHAT
-        intent = { type: 'BUILD', confidence: 1.0, reason: 'explicit build request' };
+      if (/^build\s+me\b/i.test(content) || /^(build|create|make)\s+(me\s+)?a?\s+/i.test(content)) {
+        // Build requests go through Chat — Chat gathers requirements then calls fable_start_build
+        intent = { type: 'CHAT', confidence: 1.0, reason: 'build request - gather requirements' };
       } else if (/\bworkflow\b/i.test(content)) {
         // Workflow management is always CHAT — handled by internal fable_* tools
         intent = { type: 'CHAT', confidence: 1.0, reason: 'workflow management' };
@@ -73,9 +73,11 @@ export const handler: APIGatewayProxyHandler = async (event): Promise<APIGateway
       console.log(`Intent classified: ${intent.type} (${intent.confidence})`);
 
       // Route to appropriate handler
+      // BUILD intent also goes through Chat — Chat gathers requirements then calls fable_start_build
       switch (intent.type) {
         case 'CHAT':
         case 'CLARIFY':
+        case 'BUILD':
           await invokeLambda(`fable-${STAGE}-chat`, {
             connectionId,
             message: content,
@@ -85,49 +87,6 @@ export const handler: APIGatewayProxyHandler = async (event): Promise<APIGateway
             intent,
             requestId: message.requestId,
           });
-          break;
-
-        case 'BUILD':
-          // Invoke build-kickoff Lambda to start the build pipeline
-          await sendToConnection(connectionId, {
-            type: 'chat_chunk',
-            payload: { content: `Starting build for: "${content}"...` },
-          });
-
-          try {
-            const buildResponse = await lambdaClient.send(new InvokeCommand({
-              FunctionName: `fable-${STAGE}-build-kickoff`,
-              Payload: Buffer.from(JSON.stringify({
-                action: 'start',
-                payload: {
-                  request: content,
-                  userId: connection.userId,
-                  orgId: connection.orgId,
-                  connectionId,
-                },
-              })),
-            }));
-
-            const buildResult = buildResponse.Payload
-              ? JSON.parse(new TextDecoder().decode(buildResponse.Payload))
-              : null;
-
-            if (buildResult?.body) {
-              const body = JSON.parse(buildResult.body);
-              await sendToConnection(connectionId, {
-                type: 'chat_chunk',
-                payload: { content: `\n\nBuild started! Build ID: ${body.buildId}\n\nYou can monitor progress in the Builds tab.` },
-              });
-            }
-          } catch (buildError) {
-            console.error('Build kickoff error:', buildError);
-            await sendToConnection(connectionId, {
-              type: 'chat_chunk',
-              payload: { content: '\n\nFailed to start build. Please try again.' },
-            });
-          }
-
-          await sendToConnection(connectionId, { type: 'chat_complete', messageId: crypto.randomUUID() });
           break;
 
         case 'USE_TOOL':
@@ -149,8 +108,8 @@ export const handler: APIGatewayProxyHandler = async (event): Promise<APIGateway
           break;
       }
 
-      // Update conversation context
-      await updateConversationContext(connection.userId, context.conversationId, content, intent.type);
+      // Update conversation context (save user message)
+      await updateConversationContext(connection.userId, connection.orgId, context.conversationId, content, intent.type);
 
       return { statusCode: 200, body: 'OK' };
     }
@@ -187,17 +146,79 @@ async function getConnection(connectionId: string) {
 }
 
 async function loadConversationContext(userId: string, conversationId?: string) {
-  // For now, return a simple context. TODO: Load from DynamoDB
+  const convId = conversationId || crypto.randomUUID();
+
+  if (conversationId) {
+    try {
+      const result = await docClient.send(new GetCommand({
+        TableName: CONVERSATIONS_TABLE,
+        Key: { PK: `USER#${userId}`, SK: `CONV#${conversationId}` },
+      }));
+
+      if (result.Item) {
+        return {
+          conversationId,
+          messages: (result.Item.messages || []) as Array<{ role: string; content: string }>,
+          activeBuildId: (result.Item.activeBuildId as string) || null,
+        };
+      }
+    } catch (error) {
+      console.error('Error loading conversation:', error);
+    }
+  }
+
   return {
-    conversationId: conversationId || crypto.randomUUID(),
+    conversationId: convId,
     messages: [] as Array<{ role: string; content: string }>,
     activeBuildId: null,
   };
 }
 
-async function updateConversationContext(userId: string, conversationId: string, content: string, intent: string) {
-  // TODO: Store in DynamoDB conversations table
-  console.log(`Updating conversation ${conversationId} for user ${userId}`);
+async function updateConversationContext(
+  userId: string,
+  orgId: string,
+  conversationId: string,
+  userMessage: string,
+  intent: string,
+) {
+  try {
+    // Load existing conversation to append
+    const existing = await docClient.send(new GetCommand({
+      TableName: CONVERSATIONS_TABLE,
+      Key: { PK: `USER#${userId}`, SK: `CONV#${conversationId}` },
+    }));
+
+    const now = new Date().toISOString();
+    const messages = (existing.Item?.messages || []) as Array<{ role: string; content: string; timestamp: string }>;
+
+    // Append user message
+    messages.push({ role: 'user', content: userMessage, timestamp: now });
+
+    // Cap at last 50 messages
+    const capped = messages.slice(-50);
+
+    // Auto-generate title from first user message
+    const title = existing.Item?.title || userMessage.slice(0, 80);
+
+    await docClient.send(new PutCommand({
+      TableName: CONVERSATIONS_TABLE,
+      Item: {
+        PK: `USER#${userId}`,
+        SK: `CONV#${conversationId}`,
+        conversationId,
+        orgId,
+        title,
+        messages: capped,
+        activeBuildId: existing.Item?.activeBuildId || null,
+        intent,
+        createdAt: existing.Item?.createdAt || now,
+        updatedAt: now,
+        ttl: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60, // 30 days
+      },
+    }));
+  } catch (error) {
+    console.error('Error updating conversation:', error);
+  }
 }
 
 async function updateConnectionSubscription(connectionId: string, subscribed: boolean) {
@@ -253,7 +274,7 @@ Respond with: {"type": "CHAT|BUILD|USE_TOOL|MEMORY|CLARIFY", "confidence": 0.0-1
   // Fallback: Simple keyword-based classification when Bedrock fails
   const lowerContent = content.toLowerCase();
   if (/^(build|create|make)\s+(me\s+)?a?\s+/i.test(content)) {
-    return { type: 'BUILD', confidence: 0.8, reason: 'Keyword match: starts with build/create/make' };
+    return { type: 'CHAT', confidence: 0.8, reason: 'Build request - route through chat for requirement gathering' };
   }
   if (lowerContent.includes('what do you remember') || lowerContent.includes('my memories')) {
     return { type: 'MEMORY', confidence: 0.7, reason: 'Keyword match: memory query' };

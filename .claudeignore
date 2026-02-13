@@ -1,5 +1,6 @@
-# Archived iteration - reference only when explicitly requested
+# Archived iterations - reference only when explicitly requested
 iteration-1/
+iteration-2/
 
 # Node modules are never relevant
 node_modules/

@@ -77,42 +77,30 @@ From the brainstorm addendum - this is the guiding principle:
 
 ---
 
-## Current Architecture (Iteration 2)
+## Current Architecture (Chat → Builder → Deploy)
 
 ```
-User Request
+User (Chat UI)
+    ↓ WebSocket
+Router Lambda (intent classification)
     ↓
-FABLE-CORE (one-shot, creates specs + templates)
-    ↓ spawns
-FABLE-OI (on Ralph Wiggum loop, manages workers)
-    ↓ spawns
-FABLE-Workers (on Ralph Wiggum loops, implement tasks)
+Chat Lambda (conversational requirement gathering, fable_start_build tool)
     ↓
-Integrated Result
+Build Kickoff Lambda → ECS Fargate Task (FABLE Builder)
+    ↓
+Builder (Claude Code + memory-driven knowledge)
+    ↓ EventBridge (task stopped)
+Build Completion Lambda → Tool Deployer → WebSocket notification
 ```
 
 **Key files:**
-- Current work: `CURRENT-WORK.md`
-- Templates: `iteration-2/templates/CLAUDE.md.{core,oi,worker}-base`
-- Full vision: `brainstorm.md`
-- Iteration 2 philosophy: `brainstorm-addendum-iteration-2.md`
-- Memory system design: `memory-system-design.md`
-- Iteration 1 (archived): `iteration-1/`
-
----
-
-## Observability: Graph + Timeline
-
-We use dual artifacts for verification and auditing:
-
-| Artifact | Purpose | Consumer | Format |
-|----------|---------|----------|--------|
-| **Knowledge Graph** | Current state, relationships, validation queries | AI (CORE verifies) | JSON |
-| **Timeline** | Append-only audit log of events | Humans (debugging) | JSONL |
-
-The graph is the source of truth for AI reasoning. The timeline is the auditable record.
-
-See `CURRENT-WORK.md` for the current design discussion.
+- Templates: `templates/CLAUDE.md.builder`
+- Frontend: `packages/ui/` (Vue 3 + Quasar)
+- Infrastructure: `packages/infra/` (CDK)
+- Lambdas: `packages/infra/lambda/{router,chat,build-kickoff,build-completion,tool-deployer}/`
+- Build container: `packages/infra/build/{Dockerfile,entrypoint.sh}`
+- Scripts: `scripts/{e2e-test.mjs,seed-memories.ts}`
+- Archived iterations: `iteration-1/`, `iteration-2/` (in .claudeignore)
 
 ---
 
@@ -121,8 +109,7 @@ See `CURRENT-WORK.md` for the current design discussion.
 ### Always Use Clean Isolation
 1. Create test projects in `/Users/simonmoon/Code/FABLE-test/` (outside FABLE repo)
 2. Initialize fresh git - no parent repo contamination
-3. Copy templates from `iteration-2/templates/`
-4. Kill any lingering Claude processes before starting
+3. Kill any lingering Claude processes before starting
 
 ### Why Isolation Matters
 - Parent git repos cause CLAUDE.md rules to bleed through
@@ -148,11 +135,11 @@ To test recovery and the Ralph Wiggum loop:
 
 | Topic | Location | When to Read |
 |-------|----------|--------------|
-| Full product vision | `brainstorm.md` | When you need the big picture |
-| Iteration 2 approach | `brainstorm-addendum-iteration-2.md` | When you need philosophy context |
 | Current work status | `CURRENT-WORK.md` | When resuming active work |
-| Base templates | `iteration-2/templates/` | When modifying FABLE behavior |
-| Iteration 1 (archived) | `iteration-1/` | **NEVER** - ignored via .claudeignore. Only access if user explicitly requests. |
+| Builder template | `templates/CLAUDE.md.builder` | When modifying builder behavior |
+| Frontend UI | `packages/ui/` | When modifying the chat interface |
+| Infrastructure | `packages/infra/` | When modifying Lambda/CDK code |
+| Archived iterations | `iteration-1/`, `iteration-2/` | **NEVER** - ignored via .claudeignore. Only access if user explicitly requests. |
 
 **Don't read everything.** Check documents only when you need specific detail. This file should be sufficient for most work.
 
@@ -358,11 +345,9 @@ We're building the loop, not the capabilities. The capabilities prove the loop w
 
 **Philosophy:** Trust the machine spirit, CLAUDE.md as infrastructure, prompts over code
 
-**Architecture:** CORE → OI → Workers, template inheritance, Ralph Wiggum loops
+**Architecture:** Chat → Builder → Deploy. ECS Fargate + EventBridge + memory-driven builder.
 
-**Testing:** Clean isolation, observe don't rescue, analyze failures
-
-**Observability:** Graph (AI truth) + Timeline (human audit)
+**Testing:** Clean isolation, E2E via WebSocket (`scripts/e2e-test.mjs`), observe don't rescue
 
 **Your role:** Assistant, not rescuer. Help build the system, don't become the system.
 

@@ -660,20 +660,29 @@ After all workers complete successfully, push to GitHub. The CI/CD pipeline hand
 **CRITICAL Environment Variables:**
 - `FABLE_BUILD_ID` - The unique build ID (e.g., `e2c57fc2-cbb1-4c1f-8f1b-40a0f2528160`)
 - `FABLE_GITHUB_REPO` - The tools repo (e.g., `ForeverForwardFlow/FABLE-TOOLS`)
+
+### 0. Read Iteration Number
+
+```bash
+# Read iteration number (1 for first attempt, 2+ for retries)
+ITERATION=$(cat build-spec.json | jq -r '.iteration // 1')
+echo "Build iteration: $ITERATION"
+```
+
 ### 1. Clone Tools Repo
 
 **Git credential helper is pre-configured — use plain HTTPS URLs:**
 
 ```bash
-git clone --depth 1 https://github.com/$FABLE_GITHUB_REPO /tmp/fable-tools
+git clone https://github.com/$FABLE_GITHUB_REPO /tmp/fable-tools
 cd /tmp/fable-tools
 ```
 
 ### 2. Create Branch & Copy Tools
 
 ```bash
-# Create feature branch for this build
-git checkout -b "fable/$FABLE_BUILD_ID"
+# Create feature branch for this build (iteration-aware to avoid conflicts on retry)
+git checkout -b "fable/${FABLE_BUILD_ID}-iter${ITERATION}"
 
 # For each successfully implemented tool:
 TOOL_NAME="{tool-name}"  # e.g., "add-numbers"
@@ -745,6 +754,29 @@ EOF
 cd tools/$TOOL_NAME && npm install && cd ../..
 ```
 
+### 2b. Verify QA Fixes (RETRY BUILDS ONLY)
+
+If this is iteration 2+, you MUST verify QA-required fixes are present in the copied files BEFORE committing:
+
+```bash
+if [ "$ITERATION" -gt 1 ]; then
+    echo "=== Verifying QA fixes in staged files ==="
+    # Read mustFix items from build-spec.json
+    MUST_FIX=$(cat build-spec.json | jq -r '.qaFeedback.mustFix[]' 2>/dev/null)
+
+    if [ -n "$MUST_FIX" ]; then
+        echo "QA mustFix items to verify:"
+        echo "$MUST_FIX"
+        echo ""
+        # For each mustFix item, grep or read the relevant source files in /tmp/fable-tools/tools/
+        # to confirm the fix was actually implemented by the workers.
+        # If a fix is NOT present, DO NOT proceed to commit.
+    fi
+fi
+```
+
+**CRITICAL:** If any QA mustFix item is NOT reflected in the source files, do NOT commit. Instead, spawn a targeted fix worker to address the missing fix, then re-copy and re-verify.
+
 ### 3. Commit & Push
 
 ```bash
@@ -753,19 +785,28 @@ cd /tmp/fable-tools
 # Stage all tool files
 git add tools/
 
-# Commit with build ID reference
-git commit -m "feat: Add tools via FABLE build $FABLE_BUILD_ID
+# Commit with build ID and iteration reference
+git commit -m "feat: Add/update tools via FABLE build $FABLE_BUILD_ID (iter $ITERATION)
 
-Tools added:
+Tools added/updated:
 - {tool-1-name}
 - {tool-2-name}
 
-Build ID: $FABLE_BUILD_ID"
+Build ID: $FABLE_BUILD_ID
+Iteration: $ITERATION"
 
+# CRITICAL: Verify the commit succeeded (especially on retries)
+# If git commit fails with "nothing to commit", it means the QA fixes
+# were NOT applied by workers. This is a fatal error on retry builds.
+```
+
+**If `git commit` fails on a retry build (iteration > 1):** This means workers did NOT change the code from the previous iteration. Do NOT silently continue. Report the failure in output.json.
+
+```bash
 # Merge to main and push (triggers GitHub Actions deployment)
 git checkout main
 git pull origin main
-git merge "fable/$FABLE_BUILD_ID" --no-edit
+git merge "fable/${FABLE_BUILD_ID}-iter${ITERATION}" --no-edit
 
 git push origin main
 ```
