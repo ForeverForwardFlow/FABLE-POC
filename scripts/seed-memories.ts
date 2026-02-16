@@ -509,6 +509,235 @@ Run 'npm run build' first so dist/index.js exists.`,
     source: 'ai_inferred',
     project: 'FABLE',
   },
+
+  // ============================
+  // Infrastructure Self-Awareness
+  // ============================
+  {
+    type: 'insight',
+    content: 'FABLE architecture flow: chat → build-kickoff (ECS RunTask) → ECS builder (Claude Code + memory) → EventBridge → build-completion Lambda → tool-deployer → QA smoke tests → WebSocket notification to user. Understanding this pipeline is essential for diagnosing build failures.',
+    tags: ['infra', 'architecture', 'pipeline'],
+    importance: 0.9,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+    pinned: true,
+  },
+  {
+    type: 'insight',
+    content: 'build-completion Lambda: reads builder output from S3, invokes tool-deployer, runs QA smoke tests (direct Lambda invoke with {arguments: {...}} format), AI fidelity check via Bedrock, then notifies user via WebSocket or retries the build on failure.',
+    tags: ['infra', 'build-completion', 'pipeline'],
+    importance: 0.85,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+  },
+  {
+    type: 'insight',
+    content: 'Tool Lambda invocation format: {arguments: {param1: val1, param2: val2}}. NOT MCP JSON-RPC envelope. The handler destructures event.arguments directly. Getting this format wrong causes QA smoke tests to fail even when the tool itself is correct.',
+    tags: ['infra', 'tools', 'payload', 'qa'],
+    importance: 0.9,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+    pinned: true,
+  },
+  {
+    type: 'pattern',
+    content: 'When QA fails after deployment: (1) use mcp__infra__read_logs for build-completion to see the actual error, (2) use mcp__infra__test_invoke on the deployed tool directly to confirm it works, (3) if the tool works but QA fails, the bug is in build-completion or the test case format, not the tool code.',
+    tags: ['infra', 'diagnosis', 'qa', 'self-repair'],
+    importance: 0.9,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+    pinned: true,
+  },
+  {
+    type: 'pattern',
+    content: 'When fixing a pipeline Lambda: (1) mcp__infra__get_lambda_code to read current source, (2) write fixed code as zip to S3 using aws s3 cp, (3) mcp__infra__update_lambda_code to deploy the fix, (4) mcp__infra__test_invoke to verify the fix works. Always include a reason for audit trail.',
+    tags: ['infra', 'self-repair', 'workflow'],
+    importance: 0.85,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+  },
+  {
+    type: 'gotcha',
+    content: 'ECS container overrides have an 8192 byte limit. Large build specs must go through S3 — the build-kickoff Lambda stores them at s3://{ARTIFACTS_BUCKET}/builds/{buildId}/build-spec.json and passes an s3:// URI in the FABLE_BUILD_SPEC env var.',
+    tags: ['infra', 'ecs', 'limit', 'build-spec'],
+    importance: 0.8,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+  },
+  {
+    type: 'insight',
+    content: 'Protected functions that CANNOT be modified via mcp__infra__update_lambda_code: infra-ops (itself), ws-authorizer (security), db-init (schema). All other fable-{stage}-* functions can be read, invoked, and updated. This is enforced at both application level (deny list) and IAM Permission Boundary.',
+    tags: ['infra', 'sandboxing', 'security'],
+    importance: 0.85,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+  },
+  {
+    type: 'insight',
+    content: 'Builder templates live in S3 at s3://{ARTIFACTS_BUCKET}/templates/CLAUDE.md.builder. You can update them via mcp__infra__update_template. The updated version is pulled at the start of each build, falling back to the Docker-baked version if the S3 version is missing.',
+    tags: ['infra', 'templates', 'self-modification'],
+    importance: 0.8,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+  },
+  {
+    type: 'insight',
+    content: 'Available mcp__infra__* tools: read_logs (CloudWatch), get_lambda_config (env vars, timeout, memory), get_lambda_code (download source), test_invoke (invoke with payload), describe_ecs_tasks (build task status), update_lambda_code (deploy fix), update_template (update builder template). Use these to diagnose and fix infrastructure issues.',
+    tags: ['infra', 'tools', 'capabilities'],
+    importance: 0.85,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+  },
+  {
+    type: 'gotcha',
+    content: 'Every infrastructure modification via mcp__infra__update_lambda_code or mcp__infra__update_template is logged to the audit trail in DynamoDB (PK=AUDIT#infra). The reason field is required — always explain why the change is needed.',
+    tags: ['infra', 'audit', 'security'],
+    importance: 0.7,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+  },
+
+  // ============================
+  // UI Definition & Workflow Output
+  // ============================
+  {
+    type: 'pattern',
+    content: `ToolUIDefinition schema for output.json — each tool can include a uiDefinition for automatic UI page generation:
+{
+  "title": "My Tool",
+  "subtitle": "Brief tagline",
+  "icon": "analytics",  // Material icon name
+  "form": {
+    "fields": [
+      { "key": "text", "label": "Input Text", "widget": "textarea", "placeholder": "Enter text..." },
+      { "key": "count", "label": "Max Count", "widget": "number", "min": 1, "max": 100 },
+      { "key": "mode", "label": "Mode", "widget": "select", "options": [{"label":"Fast","value":"fast"},{"label":"Thorough","value":"thorough"}] }
+    ],
+    "submitLabel": "Analyze"
+  },
+  "resultDisplay": {
+    "type": "cards",
+    "cards": [
+      { "field": "wordCount", "label": "Words", "format": "number", "icon": "format_list_numbered" },
+      { "field": "score", "label": "Score", "format": "percent", "icon": "trending_up" }
+    ],
+    "summaryTemplate": "Analyzed {{wordCount}} words with {{score}} confidence"
+  },
+  "examples": [
+    { "label": "Simple text", "input": { "text": "hello world" } }
+  ]
+}`,
+    tags: ['ui', 'schema', 'builder', 'output'],
+    importance: 0.9,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+    pinned: true,
+  },
+  {
+    type: 'pattern',
+    content: `WorkflowDefinition format for output.json — include a workflows array to create automations:
+{
+  "name": "Daily Report",
+  "description": "Runs analysis daily and reports results",
+  "prompt": "Use my-tool to analyze the latest data and summarize the results",
+  "tools": ["my-tool"],
+  "trigger": { "type": "cron", "schedule": "0 9 * * ? *", "timezone": "America/Los_Angeles" },
+  "model": "haiku",
+  "maxTurns": 10
+}
+Workflows are metadata, not code. Just a prompt + tool references + schedule. Created post-deploy by build-completion.`,
+    tags: ['workflow', 'schema', 'builder', 'output'],
+    importance: 0.85,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+    pinned: true,
+  },
+  {
+    type: 'insight',
+    content: 'FABLE builds can produce three deliverable types: tools (Lambda functions — always), UIs (JSON uiDefinition — optional per tool), and workflows (metadata — optional). All three go in output.json. The frontend renders uiDefinitions dynamically without code changes.',
+    tags: ['architecture', 'output', 'builder'],
+    importance: 0.9,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+    pinned: true,
+  },
+  {
+    type: 'pattern',
+    content: 'DynamicForm widget types that the frontend supports: text (QInput), textarea (QInput multiline), number (QInput type=number with min/max/step), select (QSelect with options array), toggle (QToggle boolean), slider (QSlider with min/max/step). Map your tool inputs to the most appropriate widget type.',
+    tags: ['ui', 'form', 'widgets', 'builder'],
+    importance: 0.8,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+  },
+  {
+    type: 'pattern',
+    content: 'ResultDisplay types the frontend supports: cards (grid of stat cards with icons, best for numeric results), table (QTable with columns, best for tabular data), text (formatted text output), json (pretty-printed JSON, fallback). Choose the type that best presents your tool results.',
+    tags: ['ui', 'results', 'display', 'builder'],
+    importance: 0.8,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+  },
+  {
+    type: 'insight',
+    content: 'FABLE frontend uses Vue 3 + Quasar v2, dark theme, purple (#a855f7) primary color. Components use <script setup lang="ts">, Pinia stores, strict TypeScript. Material icons. Use these conventions when choosing icon names for uiDefinition.',
+    tags: ['frontend', 'conventions', 'builder'],
+    importance: 0.7,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+  },
+  {
+    type: 'pattern',
+    content: 'Tool UI examples — always include 2-3 pre-filled examples in uiDefinition.examples for "try it" buttons. Each example has a label (button text) and input (pre-filled form values). Examples help users understand what the tool does without reading documentation.',
+    tags: ['ui', 'examples', 'ux', 'builder'],
+    importance: 0.8,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+  },
+  {
+    type: 'gotcha',
+    content: 'uiDefinition is optional — if not provided, the frontend auto-generates a basic form from inputSchema properties. But providing a uiDefinition gives much better UX: custom labels, help text, appropriate widget types, formatted results display, and example buttons. Always include one for user-facing tools.',
+    tags: ['ui', 'fallback', 'ux', 'builder'],
+    importance: 0.85,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+    pinned: true,
+  },
+  {
+    type: 'pattern',
+    content: 'For card-based result displays, use Material icon names like: analytics, trending_up, format_list_numbered, text_fields, speed, sentiment_satisfied, abc, bar_chart, calculate, assessment, insights, psychology. These are rendered by Quasar QIcon component.',
+    tags: ['ui', 'icons', 'material', 'builder'],
+    importance: 0.7,
+    scope: 'project',
+    source: 'ai_inferred',
+    project: 'FABLE',
+  },
+  {
+    type: 'pattern',
+    content: 'When building tools that need a workflow, think about what should run automatically vs what users trigger manually. Daily analysis/reports = cron workflow. On-demand processing = manual trigger (or just the tool page). Include the workflow in output.json only if automation makes sense for the tool.',
+    tags: ['workflow', 'design', 'builder'],
+    importance: 0.75,
+    scope: 'project',
+    source: 'ai_inferred',
+    project: 'FABLE',
+  },
 ];
 
 async function createMemoryViaHttp(memory: Memory): Promise<boolean> {

@@ -10,14 +10,18 @@
  */
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, ScanCommand } from '@aws-sdk/lib-dynamodb';
-import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import { DynamoDBDocumentClient, ScanCommand, DeleteCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { LambdaClient, InvokeCommand, DeleteFunctionCommand } from '@aws-sdk/client-lambda';
 
 const dynamoClient = new DynamoDBClient({});
-const docClient = DynamoDBDocumentClient.from(dynamoClient);
+const docClient = DynamoDBDocumentClient.from(dynamoClient, {
+  marshallOptions: { removeUndefinedValues: true },
+});
 const lambdaClient = new LambdaClient({});
 
 const TOOLS_TABLE = process.env.TOOLS_TABLE!;
+const WORKFLOWS_TABLE = process.env.WORKFLOWS_TABLE!;
+const WORKFLOW_EXECUTOR_ARN = process.env.WORKFLOW_EXECUTOR_ARN!;
 const STAGE = process.env.STAGE || 'dev';
 const GATEWAY_NAME = 'fable-tools-gateway';
 const GATEWAY_VERSION = '1.0.0';
@@ -54,9 +58,11 @@ interface FableTool {
 interface LambdaEvent {
   headers: Record<string, string>;
   body: string;
+  rawPath?: string;
   requestContext: {
     http: {
       method: string;
+      path?: string;
     };
   };
 }
@@ -66,13 +72,21 @@ export const handler = async (event: LambdaEvent): Promise<{
   headers: Record<string, string>;
   body: string;
 }> => {
-  // Content-Type header (CORS is handled by Lambda Function URL config)
-  const headers = {
+  // Content-Type header + CORS for HTTP API routes
+  const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
 
-  // Handle GET for simple tool listing (browser-friendly)
-  if (event.requestContext.http.method === 'GET') {
+  // Add CORS headers for public API routes
+  const requestPath = event.rawPath || event.requestContext.http.path || '/';
+  if (requestPath.startsWith('/tools') || requestPath.startsWith('/workflows')) {
+    headers['Access-Control-Allow-Origin'] = '*';
+    headers['Access-Control-Allow-Methods'] = 'GET, POST, DELETE, OPTIONS';
+    headers['Access-Control-Allow-Headers'] = 'content-type';
+  }
+
+  // Handle GET /tools — tool listing (browser-friendly)
+  if (event.requestContext.http.method === 'GET' && (requestPath === '/tools' || requestPath === '/')) {
     try {
       const response = await handleToolsList();
       return {
@@ -87,6 +101,109 @@ export const handler = async (event: LambdaEvent): Promise<{
         headers,
         body: JSON.stringify({ error: 'Internal server error' }),
       };
+    }
+  }
+
+  // Handle POST /tools/call — direct tool invocation from frontend
+  if (requestPath === '/tools/call' && event.requestContext.http.method === 'POST') {
+    try {
+      const body = JSON.parse(event.body);
+      const { name, arguments: args } = body;
+      if (!name) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: 'Missing tool name' }) };
+      }
+      const response = await handleToolsCall({ name, arguments: args || {} });
+      if (response.error) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: response.error.message }) };
+      }
+      // Extract the text content from MCP response
+      const content = (response.result as { content?: Array<{ text: string }> })?.content;
+      const text = content?.[0]?.text;
+      let result: unknown;
+      try {
+        result = text ? JSON.parse(text) : response.result;
+      } catch {
+        result = text || response.result;
+      }
+      return { statusCode: 200, headers, body: JSON.stringify({ result }) };
+    } catch (error) {
+      console.error('Tool call error:', error);
+      return { statusCode: 500, headers, body: JSON.stringify({ error: 'Tool invocation failed' }) };
+    }
+  }
+
+  // Handle DELETE /tools/delete — tool deletion from frontend
+  if (requestPath === '/tools/delete' && event.requestContext.http.method === 'POST') {
+    try {
+      const body = JSON.parse(event.body);
+      const { name } = body;
+      if (!name) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: 'Missing tool name' }) };
+      }
+      await handleToolDelete(name);
+      return { statusCode: 200, headers, body: JSON.stringify({ deleted: true, name }) };
+    } catch (error) {
+      console.error('Tool delete error:', error);
+      return { statusCode: 500, headers, body: JSON.stringify({ error: `Delete failed: ${error}` }) };
+    }
+  }
+
+  // Handle GET /workflows — list all workflows
+  if (requestPath === '/workflows' && event.requestContext.http.method === 'GET') {
+    try {
+      const workflows = await handleWorkflowsList();
+      return { statusCode: 200, headers, body: JSON.stringify({ workflows }) };
+    } catch (error) {
+      console.error('Workflows list error:', error);
+      return { statusCode: 500, headers, body: JSON.stringify({ error: 'Failed to list workflows' }) };
+    }
+  }
+
+  // Handle POST /workflows/run — trigger a workflow manually
+  if (requestPath === '/workflows/run' && event.requestContext.http.method === 'POST') {
+    try {
+      const body = JSON.parse(event.body);
+      const { workflowId, orgId } = body;
+      if (!workflowId || !orgId) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: 'Missing workflowId or orgId' }) };
+      }
+      await handleWorkflowRun(workflowId, orgId);
+      return { statusCode: 200, headers, body: JSON.stringify({ triggered: true, workflowId }) };
+    } catch (error) {
+      console.error('Workflow run error:', error);
+      return { statusCode: 500, headers, body: JSON.stringify({ error: `Run failed: ${error}` }) };
+    }
+  }
+
+  // Handle POST /workflows/pause — toggle workflow active/paused
+  if (requestPath === '/workflows/pause' && event.requestContext.http.method === 'POST') {
+    try {
+      const body = JSON.parse(event.body);
+      const { workflowId, orgId, status } = body;
+      if (!workflowId || !orgId || !status) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: 'Missing workflowId, orgId, or status' }) };
+      }
+      await handleWorkflowStatusUpdate(workflowId, orgId, status);
+      return { statusCode: 200, headers, body: JSON.stringify({ updated: true, workflowId, status }) };
+    } catch (error) {
+      console.error('Workflow pause error:', error);
+      return { statusCode: 500, headers, body: JSON.stringify({ error: `Status update failed: ${error}` }) };
+    }
+  }
+
+  // Handle POST /workflows/delete — delete a workflow
+  if (requestPath === '/workflows/delete' && event.requestContext.http.method === 'POST') {
+    try {
+      const body = JSON.parse(event.body);
+      const { workflowId, orgId } = body;
+      if (!workflowId || !orgId) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: 'Missing workflowId or orgId' }) };
+      }
+      await handleWorkflowDelete(workflowId, orgId);
+      return { statusCode: 200, headers, body: JSON.stringify({ deleted: true, workflowId }) };
+    } catch (error) {
+      console.error('Workflow delete error:', error);
+      return { statusCode: 500, headers, body: JSON.stringify({ error: `Delete failed: ${error}` }) };
     }
   }
 
@@ -194,6 +311,7 @@ async function handleToolsList(id?: string | number): Promise<McpResponse> {
           type: 'object',
           properties: {},
         },
+        ...(item.uiDefinition && { uiDefinition: typeof item.uiDefinition === 'string' ? JSON.parse(item.uiDefinition) : item.uiDefinition }),
       };
     });
 
@@ -291,6 +409,125 @@ async function findTool(name: string): Promise<FableTool | null> {
 
   return null;
 }
+
+async function handleToolDelete(name: string): Promise<void> {
+  console.log(`Deleting tool: ${name}`);
+
+  // Find all DynamoDB records for this tool (may exist in multiple orgs)
+  const result = await docClient.send(new ScanCommand({
+    TableName: TOOLS_TABLE,
+    FilterExpression: 'begins_with(SK, :sk)',
+    ExpressionAttributeValues: { ':sk': 'TOOL#' },
+  }));
+
+  const toDelete = (result.Items || []).filter((item) => {
+    const schema = item.schema as FableTool['schema'];
+    return schema.name === name;
+  });
+
+  if (toDelete.length === 0) {
+    throw new Error(`Tool not found: ${name}`);
+  }
+
+  // Delete Lambda function
+  const toolName = toDelete[0].toolName as string;
+  const functionName = `fable-${STAGE}-tool-${toolName}`;
+  try {
+    await lambdaClient.send(new DeleteFunctionCommand({ FunctionName: functionName }));
+    console.log(`Deleted Lambda: ${functionName}`);
+  } catch (err: unknown) {
+    // Ignore if Lambda doesn't exist (already deleted)
+    if ((err as { name?: string }).name !== 'ResourceNotFoundException') {
+      console.warn(`Failed to delete Lambda ${functionName}:`, err);
+    }
+  }
+
+  // Delete all DynamoDB records for this tool
+  for (const item of toDelete) {
+    await docClient.send(new DeleteCommand({
+      TableName: TOOLS_TABLE,
+      Key: { PK: item.PK as string, SK: item.SK as string },
+    }));
+    console.log(`Deleted DynamoDB record: ${item.PK}/${item.SK}`);
+  }
+}
+
+// ============================================================
+// Workflow handlers
+// ============================================================
+
+async function handleWorkflowsList(): Promise<unknown[]> {
+  console.log('Listing workflows from DynamoDB...');
+
+  // Scan all orgs for now (small dataset). Query by org when auth is added.
+  const result = await docClient.send(new ScanCommand({
+    TableName: WORKFLOWS_TABLE,
+    FilterExpression: 'begins_with(SK, :sk)',
+    ExpressionAttributeValues: { ':sk': 'WORKFLOW#' },
+  }));
+
+  const workflows = (result.Items || []).map((item: Record<string, unknown>) => ({
+    workflowId: item.workflowId,
+    name: item.name,
+    description: item.description,
+    status: item.status,
+    trigger: item.trigger,
+    model: item.model,
+    tools: item.tools,
+    maxTurns: item.maxTurns,
+    orgId: item.orgId,
+    lastExecutedAt: item.lastExecutedAt || null,
+    executionCount: item.executionCount || 0,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+  }));
+
+  console.log(`Found ${workflows.length} workflows`);
+  return workflows;
+}
+
+async function handleWorkflowRun(workflowId: string, orgId: string): Promise<void> {
+  console.log(`Running workflow: ${workflowId}`);
+
+  await lambdaClient.send(new InvokeCommand({
+    FunctionName: WORKFLOW_EXECUTOR_ARN,
+    InvocationType: 'Event', // Async
+    Payload: Buffer.from(JSON.stringify({
+      workflowId,
+      orgId,
+      trigger: 'manual',
+    })),
+  }));
+}
+
+async function handleWorkflowStatusUpdate(workflowId: string, orgId: string, status: string): Promise<void> {
+  console.log(`Updating workflow ${workflowId} status to ${status}`);
+
+  await docClient.send(new UpdateCommand({
+    TableName: WORKFLOWS_TABLE,
+    Key: { PK: `ORG#${orgId}`, SK: `WORKFLOW#${workflowId}` },
+    UpdateExpression: 'SET #s = :status, updatedAt = :now',
+    ExpressionAttributeNames: { '#s': 'status' },
+    ExpressionAttributeValues: {
+      ':status': status,
+      ':now': new Date().toISOString(),
+    },
+    ConditionExpression: 'attribute_exists(PK)',
+  }));
+}
+
+async function handleWorkflowDelete(workflowId: string, orgId: string): Promise<void> {
+  console.log(`Deleting workflow: ${workflowId}`);
+
+  await docClient.send(new DeleteCommand({
+    TableName: WORKFLOWS_TABLE,
+    Key: { PK: `ORG#${orgId}`, SK: `WORKFLOW#${workflowId}` },
+  }));
+}
+
+// ============================================================
+// Tool invocation
+// ============================================================
 
 async function invokeToolFunction(
   tool: FableTool,

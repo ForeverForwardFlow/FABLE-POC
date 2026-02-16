@@ -30,27 +30,71 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue';
+import { useRouter, useRoute } from 'vue-router';
 import { useChatStore } from 'src/stores/chat-store';
+import { useConversationsStore } from 'src/stores/conversations-store';
 import { fableWs } from 'src/boot/websocket';
 import ChatMessage from 'src/components/chat/ChatMessage.vue';
 import ChatInput from 'src/components/chat/ChatInput.vue';
 import DetailsPanel from 'src/components/details/DetailsPanel.vue';
-import type { Action } from 'src/types';
+import type { Action, WsIncomingMessage } from 'src/types';
 
+const router = useRouter();
+const route = useRoute();
 const chatStore = useChatStore();
+const conversationsStore = useConversationsStore();
 const messagesRef = ref<HTMLElement>();
 
-// Wire WebSocket messages to chat store
+// Wire WebSocket messages to chat store and conversations store
 let unsubscribe: (() => void) | null = null;
 
+function initAfterConnect() {
+  // Load specific conversation from route param, or restore from localStorage
+  const convId = route.params.conversationId as string | undefined;
+  if (convId) {
+    chatStore.loadConversation(convId);
+  } else {
+    chatStore.restoreFromLocalStorage();
+  }
+
+  // Fetch conversation list for sidebar
+  conversationsStore.fetchConversations();
+}
+
+let unwatchConnected: (() => void) | null = null;
+
 onMounted(() => {
-  unsubscribe = fableWs.onMessage((msg) => {
+  unsubscribe = fableWs.onMessage((msg: WsIncomingMessage) => {
+    // Route conversation management messages to conversations store
+    if (msg.type === 'conversations_list') {
+      conversationsStore.handleConversationsList(msg.payload.conversations);
+      return;
+    }
+    if (msg.type === 'conversation_deleted') {
+      conversationsStore.handleConversationDeleted(msg.payload.conversationId);
+      return;
+    }
+    // Everything else goes to chat store
     chatStore.handleWsMessage(msg);
   });
+
+  // Wait for WebSocket connection before sending messages
+  if (fableWs.connected.value) {
+    initAfterConnect();
+  } else {
+    unwatchConnected = watch(fableWs.connected, (isConnected) => {
+      if (isConnected) {
+        initAfterConnect();
+        unwatchConnected?.();
+        unwatchConnected = null;
+      }
+    });
+  }
 });
 
 onUnmounted(() => {
   unsubscribe?.();
+  unwatchConnected?.();
 });
 
 // Auto-scroll to bottom when messages change
@@ -69,8 +113,13 @@ function handleSend(content: string) {
 }
 
 function handleAction(action: Action) {
-  console.log('Action clicked:', action);
-  if (action.action.startsWith('http')) {
+  if (action.action.startsWith('navigate:')) {
+    const path = action.action.slice(9);
+    router.push(path);
+  } else if (action.action.startsWith('try:')) {
+    const toolName = action.action.slice(4);
+    chatStore.sendMessage(`Try the ${toolName} tool with a sample input.`);
+  } else if (action.action.startsWith('http')) {
     window.open(action.action, '_blank');
   }
 }

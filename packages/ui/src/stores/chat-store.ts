@@ -2,12 +2,14 @@ import { defineStore } from 'pinia';
 import { fableWs } from '../boot/websocket';
 import type { ChatMessage, ChatState, LogEntry, WsIncomingMessage } from '../types';
 
+const CONV_ID_KEY = 'fable_conversationId';
+
 export const useChatStore = defineStore('chat', {
   state: (): ChatState => ({
     messages: [],
     isBuilding: false,
     currentBuildId: null,
-    conversationId: null,
+    conversationId: localStorage.getItem(CONV_ID_KEY),
     logs: []
   }),
 
@@ -78,6 +80,7 @@ export const useChatStore = defineStore('chat', {
           }
           if (msg.payload.conversationId) {
             this.conversationId = msg.payload.conversationId;
+            localStorage.setItem(CONV_ID_KEY, msg.payload.conversationId);
           }
           break;
         }
@@ -110,7 +113,7 @@ export const useChatStore = defineStore('chat', {
               actions: tools.map(t => ({
                 label: `Try ${t.toolName}`,
                 type: 'primary' as const,
-                action: t.functionUrl,
+                action: `navigate:/tools/${t.toolName}`,
               })),
             },
           });
@@ -141,6 +144,18 @@ export const useChatStore = defineStore('chat', {
           break;
         }
 
+        case 'build_needs_help': {
+          this.isBuilding = false;
+          this.messages.push({
+            id: crypto.randomUUID(),
+            role: 'fable',
+            content: msg.payload.message,
+            timestamp: new Date().toISOString(),
+            metadata: { status: 'error' },
+          });
+          break;
+        }
+
         case 'tool_use': {
           this.addLog({
             id: crypto.randomUUID(),
@@ -148,6 +163,22 @@ export const useChatStore = defineStore('chat', {
             level: 'info',
             message: `Using tool: ${msg.payload.toolName}`,
           });
+          break;
+        }
+
+        case 'conversation_loaded': {
+          // Replace current chat with loaded conversation
+          this.conversationId = msg.payload.conversationId;
+          localStorage.setItem(CONV_ID_KEY, msg.payload.conversationId);
+          this.messages = msg.payload.messages.map((m) => ({
+            id: crypto.randomUUID(),
+            role: m.role === 'user' ? 'user' as const : 'fable' as const,
+            content: m.content,
+            timestamp: m.timestamp,
+          }));
+          this.isBuilding = false;
+          this.currentBuildId = msg.payload.activeBuildId;
+          this.logs = [];
           break;
         }
 
@@ -212,6 +243,26 @@ export const useChatStore = defineStore('chat', {
       this.currentBuildId = null;
       this.conversationId = null;
       this.logs = [];
+      localStorage.removeItem(CONV_ID_KEY);
+    },
+
+    newConversation(): void {
+      this.clearChat();
+    },
+
+    loadConversation(conversationId: string): void {
+      fableWs.send({
+        type: 'load_conversation',
+        payload: { conversationId },
+      });
+    },
+
+    restoreFromLocalStorage(): void {
+      const savedId = localStorage.getItem(CONV_ID_KEY);
+      if (savedId && !this.messages.length) {
+        this.conversationId = savedId;
+        this.loadConversation(savedId);
+      }
     },
 
     loadDemoConversation(): void {

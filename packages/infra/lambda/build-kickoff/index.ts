@@ -5,7 +5,9 @@ import { randomUUID } from 'crypto';
 
 const ecsClient = new ECSClient({});
 const dynamoClient = new DynamoDBClient({});
-const docClient = DynamoDBDocumentClient.from(dynamoClient);
+const docClient = DynamoDBDocumentClient.from(dynamoClient, {
+  marshallOptions: { removeUndefinedValues: true },
+});
 
 const BUILD_CLUSTER_ARN = process.env.BUILD_CLUSTER_ARN!;
 const BUILD_TASK_DEF = process.env.BUILD_TASK_DEF!;
@@ -26,6 +28,10 @@ interface BuildRequest {
   conversationId?: string;
   // Optional: connection ID for WebSocket notifications
   connectionId?: string;
+  // Outer retry loop: which build cycle this is (1 = first attempt)
+  buildCycle?: number;
+  // QA failure context from previous cycle (if retrying)
+  qaFailure?: Record<string, unknown>;
 }
 
 interface BuildKickoffEvent {
@@ -61,15 +67,21 @@ async function startBuild(request: BuildRequest): Promise<{ statusCode: number; 
     orgId = '00000000-0000-0000-0000-000000000001',
     conversationId,
     connectionId,
+    buildCycle = 1,
+    qaFailure,
   } = request;
 
-  console.log(`Starting build: ${buildId}`);
+  console.log(`Starting build: ${buildId} (cycle ${buildCycle})`);
   console.log(`Request: ${buildRequest}`);
 
   // Create the build spec for the container
-  const buildSpec = spec || Object.fromEntries(
+  const baseSpec = spec || Object.fromEntries(
     Object.entries({ request: buildRequest, conversationId }).filter(([, v]) => v !== undefined)
   );
+  // Augment spec with QA failure context if this is a retry cycle
+  const buildSpec = qaFailure
+    ? { ...baseSpec, qaFailure, buildCycle }
+    : baseSpec;
 
   // Record build in DynamoDB
   const item: Record<string, unknown> = {
@@ -88,6 +100,7 @@ async function startBuild(request: BuildRequest): Promise<{ statusCode: number; 
   };
   if (conversationId) item.conversationId = conversationId;
   if (connectionId) item.connectionId = connectionId;
+  if (buildCycle > 1) item.buildCycle = buildCycle;
 
   await docClient.send(new PutCommand({
     TableName: BUILDS_TABLE,

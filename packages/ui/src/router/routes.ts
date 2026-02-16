@@ -9,6 +9,26 @@ const routes: RouteRecordRaw[] = [
         path: '',
         name: 'chat',
         component: () => import('src/pages/ChatPage.vue')
+      },
+      {
+        path: 'chat/:conversationId',
+        name: 'chat-conversation',
+        component: () => import('src/pages/ChatPage.vue')
+      },
+      {
+        path: 'tools',
+        name: 'tools',
+        component: () => import('src/pages/ToolsPage.vue')
+      },
+      {
+        path: 'tools/:name',
+        name: 'tool',
+        component: () => import('src/pages/ToolPage.vue')
+      },
+      {
+        path: 'workflows',
+        name: 'workflows',
+        component: () => import('src/pages/WorkflowsPage.vue')
       }
     ]
   }

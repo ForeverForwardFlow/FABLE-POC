@@ -26,6 +26,7 @@
     "@aws-sdk/credential-provider-node": "^3.970.0",
     "@aws-sdk/lib-dynamodb": "^3.970.0",
     "@smithy/signature-v4": "^4.0.0",
+    "@types/adm-zip": "^0.5.7",
     "@types/aws-lambda": "^8.10.160",
     "@types/jest": "^30",
     "@types/node": "^24.10.1",
@@ -40,6 +41,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-scheduler": "^3.987.0",
+    "adm-zip": "^0.5.16",
     "aws-cdk-lib": "^2.236.0",
     "aws-jwt-verify": "^5.1.1",
     "constructs": "^10.0.0",

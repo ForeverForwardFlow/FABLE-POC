@@ -703,6 +703,8 @@ export class FableStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_20_X,
       environment: {
         TOOLS_TABLE: this.toolsTable.tableName,
+        WORKFLOWS_TABLE: this.workflowsTable.tableName,
+        WORKFLOW_EXECUTOR_ARN: workflowExecutorFn.functionArn,
         STAGE: stage,
       },
       timeout: cdk.Duration.seconds(30),
@@ -711,8 +713,12 @@ export class FableStack extends cdk.Stack {
       bundling: bundlingOptions,
     });
 
-    // MCP Gateway needs to read tools from DynamoDB
-    this.toolsTable.grantReadData(mcpGatewayFn);
+    // MCP Gateway needs to read and delete tools from DynamoDB
+    this.toolsTable.grantReadWriteData(mcpGatewayFn);
+
+    // MCP Gateway needs to read workflows and invoke workflow executor
+    this.workflowsTable.grantReadWriteData(mcpGatewayFn);
+    workflowExecutorFn.grantInvoke(mcpGatewayFn);
 
     // ============================================================
     // GitHub OIDC Provider and Deploy Role (for GitHub Actions CI/CD)
@@ -749,15 +755,131 @@ export class FableStack extends cdk.Stack {
       resources: [`arn:aws:cloudfront::${this.account}:distribution/${frontendDistribution.distributionId}`],
     }));
 
-    // MCP Gateway needs to invoke tool Lambdas directly
+    // MCP Gateway needs to invoke and delete tool Lambdas
     mcpGatewayFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['lambda:InvokeFunction'],
+      actions: ['lambda:InvokeFunction', 'lambda:DeleteFunction'],
       resources: [`arn:aws:lambda:${this.region}:${this.account}:function:fable-${stage}-tool-*`],
     }));
 
     // Function URL for MCP Gateway (AWS_IAM auth — used by ECS build tasks)
     const mcpGatewayUrl = mcpGatewayFn.addFunctionUrl({
+      authType: lambda.FunctionUrlAuthType.AWS_IAM,
+    });
+
+    // ============================================================
+    // Infra-Ops Lambda (FABLE self-introspection & self-modification)
+    // ============================================================
+    // Enables FABLE builders to read their own logs, inspect Lambda configs,
+    // test-invoke functions, and update Lambda code — all sandboxed by
+    // Permission Boundary to prevent modifying non-FABLE resources.
+
+    // Permission Boundary: absolute ceiling for infra-ops role.
+    // ALLOW defines maximum possible permissions. DENY narrows further.
+    // The actual role policies (below) request a subset of what's allowed here.
+    const infraOpsBoundary = new iam.ManagedPolicy(this, 'InfraOpsBoundary', {
+      managedPolicyName: `fable-${stage}-infra-ops-boundary`,
+      statements: [
+        // ALLOW: The maximum set of actions infra-ops can ever have
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            // CloudWatch Logs (read)
+            'logs:FilterLogEvents', 'logs:DescribeLogGroups', 'logs:DescribeLogStreams', 'logs:GetLogEvents',
+            'logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents',
+            // Lambda (read + invoke + update)
+            'lambda:GetFunction', 'lambda:GetFunctionConfiguration',
+            'lambda:InvokeFunction',
+            'lambda:UpdateFunctionCode', 'lambda:UpdateFunctionConfiguration',
+            // ECS (read)
+            'ecs:ListTasks', 'ecs:DescribeTasks',
+            // S3 (read/write artifacts bucket)
+            's3:GetObject', 's3:PutObject', 's3:ListBucket', 's3:GetBucketLocation',
+            // DynamoDB (read/write for audit)
+            'dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:Query', 'dynamodb:Scan',
+            // XRay (Lambda runtime needs this)
+            'xray:PutTraceSegments', 'xray:PutTelemetryRecords',
+          ],
+          resources: ['*'],
+        }),
+        // DENY: Modify protected functions (infra-ops itself, ws-authorizer, db-init)
+        new iam.PolicyStatement({
+          effect: iam.Effect.DENY,
+          actions: ['lambda:UpdateFunctionCode', 'lambda:UpdateFunctionConfiguration', 'lambda:DeleteFunction'],
+          resources: [
+            `arn:aws:lambda:${this.region}:${this.account}:function:fable-${stage}-infra-ops`,
+            `arn:aws:lambda:${this.region}:${this.account}:function:fable-${stage}-ws-authorizer`,
+            `arn:aws:lambda:${this.region}:${this.account}:function:fable-${stage}-db-init`,
+          ],
+        }),
+      ],
+    });
+
+    const infraOpsFn = new lambdaNodejs.NodejsFunction(this, 'InfraOpsFn', {
+      functionName: `fable-${stage}-infra-ops`,
+      entry: path.join(__dirname, '../lambda/infra-ops/index.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      environment: {
+        STAGE: stage,
+        ARTIFACTS_BUCKET: this.artifactsBucket.bucketName,
+        BUILDS_TABLE: this.buildsTable.tableName,
+        BUILD_CLUSTER_ARN: `arn:aws:ecs:${this.region}:${this.account}:cluster/fable-${stage}-builds`,
+      },
+      timeout: cdk.Duration.seconds(60),
+      memorySize: 256,
+      logRetention: logs.RetentionDays.ONE_WEEK,
+      bundling: {
+        minify: true,
+        sourceMap: true,
+        target: 'node20',
+        format: lambdaNodejs.OutputFormat.CJS,
+        nodeModules: ['adm-zip'],
+      },
+    });
+
+    // Apply Permission Boundary
+    iam.PermissionsBoundary.of(infraOpsFn).apply(infraOpsBoundary);
+
+    // CloudWatch Logs read (scoped to fable log groups)
+    infraOpsFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['logs:FilterLogEvents', 'logs:DescribeLogGroups', 'logs:DescribeLogStreams', 'logs:GetLogEvents'],
+      resources: [
+        `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/lambda/fable-${stage}-*:*`,
+        `arn:aws:logs:${this.region}:${this.account}:log-group:/ecs/fable-${stage}-*:*`,
+      ],
+    }));
+
+    // Lambda read + invoke + update (scoped to fable functions)
+    infraOpsFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'lambda:GetFunction', 'lambda:GetFunctionConfiguration',
+        'lambda:InvokeFunction',
+        'lambda:UpdateFunctionCode', 'lambda:UpdateFunctionConfiguration',
+      ],
+      resources: [`arn:aws:lambda:${this.region}:${this.account}:function:fable-${stage}-*`],
+    }));
+
+    // ECS describe (scoped to build cluster)
+    infraOpsFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ecs:ListTasks', 'ecs:DescribeTasks'],
+      resources: ['*'],
+      conditions: {
+        ArnEquals: {
+          'ecs:cluster': `arn:aws:ecs:${this.region}:${this.account}:cluster/fable-${stage}-builds`,
+        },
+      },
+    }));
+
+    // S3 read/write (artifacts bucket)
+    this.artifactsBucket.grantReadWrite(infraOpsFn);
+
+    // DynamoDB: builds table read/write (for audit), tools table read
+    this.buildsTable.grantReadWriteData(infraOpsFn);
+    this.toolsTable.grantReadData(infraOpsFn);
+
+    // Function URL with AWS_IAM auth (same pattern as Memory Lambda)
+    const infraOpsUrl = infraOpsFn.addFunctionUrl({
       authType: lambda.FunctionUrlAuthType.AWS_IAM,
     });
 
@@ -836,6 +958,45 @@ export class FableStack extends cdk.Stack {
       authorizer: mcpJwtAuthorizer,
     });
 
+    // Public tools endpoints (no auth — tools listing + invocation)
+    mcpHttpApi.addRoutes({
+      path: '/tools',
+      methods: [apigatewayv2.HttpMethod.GET],
+      integration: mcpIntegration,
+    });
+    mcpHttpApi.addRoutes({
+      path: '/tools/call',
+      methods: [apigatewayv2.HttpMethod.POST],
+      integration: mcpIntegration,
+    });
+    mcpHttpApi.addRoutes({
+      path: '/tools/delete',
+      methods: [apigatewayv2.HttpMethod.POST],
+      integration: mcpIntegration,
+    });
+
+    // Public workflow endpoints (no auth — workflow listing + actions)
+    mcpHttpApi.addRoutes({
+      path: '/workflows',
+      methods: [apigatewayv2.HttpMethod.GET],
+      integration: mcpIntegration,
+    });
+    mcpHttpApi.addRoutes({
+      path: '/workflows/run',
+      methods: [apigatewayv2.HttpMethod.POST],
+      integration: mcpIntegration,
+    });
+    mcpHttpApi.addRoutes({
+      path: '/workflows/pause',
+      methods: [apigatewayv2.HttpMethod.POST],
+      integration: mcpIntegration,
+    });
+    mcpHttpApi.addRoutes({
+      path: '/workflows/delete',
+      methods: [apigatewayv2.HttpMethod.POST],
+      integration: mcpIntegration,
+    });
+
     // ============================================================
     // Build Pipeline Infrastructure (ECS + Step Functions)
     // ============================================================
@@ -891,8 +1052,11 @@ export class FableStack extends cdk.Stack {
     // Permission to invoke MCP Gateway (for dynamic tool access)
     mcpGatewayFn.grantInvokeUrl(buildTaskRole);
 
-    // Permission to invoke Memory Lambda Function URL (for MCP memory sidecar)
-    memoryFn.grantInvokeUrl(buildTaskRole);
+    // Permission to invoke Memory Lambda (direct SDK invoke for MCP sidecar)
+    memoryFn.grantInvoke(buildTaskRole);
+
+    // Permission to invoke Infra-Ops Lambda (direct SDK invoke for MCP sidecar)
+    infraOpsFn.grantInvoke(buildTaskRole);
 
     // CloudWatch Logs permissions (scoped to fable build log groups)
     buildTaskRole.addToPolicy(new iam.PolicyStatement({
@@ -944,7 +1108,9 @@ export class FableStack extends cdk.Stack {
         TOOL_DEPLOYER_ARN: toolDeployerFn.functionArn,
         MCP_GATEWAY_URL: mcpGatewayUrl.url,
         GITHUB_SECRET_ARN: githubSecret.secretArn,
-        MEMORY_LAMBDA_URL: memoryFnUrl.url,
+        MEMORY_LAMBDA_NAME: memoryFn.functionName,
+        INFRA_OPS_LAMBDA_NAME: infraOpsFn.functionName,
+        MAX_BUILDER_ITERATIONS: '3',
       },
     });
 
@@ -1008,17 +1174,34 @@ export class FableStack extends cdk.Stack {
         // WEBSOCKET_ENDPOINT added after WebSocket API is created below
         STAGE: stage,
       },
-      timeout: cdk.Duration.seconds(60),
+      timeout: cdk.Duration.seconds(120),
       memorySize: 512,
       logRetention: logs.RetentionDays.ONE_WEEK,
-      bundling: bundlingOptions,
+      bundling: {
+        minify: true,
+        sourceMap: true,
+        target: 'node20',
+        format: lambdaNodejs.OutputFormat.CJS,
+        nodeModules: ['@smithy/signature-v4', '@aws-crypto/sha256-js'],
+      },
     });
 
     // Completion Lambda permissions
-    this.artifactsBucket.grantRead(buildCompletionFn);
+    this.artifactsBucket.grantReadWrite(buildCompletionFn);
     this.buildsTable.grantReadWriteData(buildCompletionFn);
     this.connectionsTable.grantReadData(buildCompletionFn);
+    this.workflowsTable.grantReadWriteData(buildCompletionFn); // workflow creation
     toolDeployerFn.grantInvoke(buildCompletionFn);
+    buildKickoffFn.grantInvoke(buildCompletionFn); // outer retry loop
+    buildCompletionFn.addToRolePolicy(invokeToolsPolicy); // post-deploy QA (Function URL)
+    buildCompletionFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['lambda:InvokeFunction'],
+      resources: [`arn:aws:lambda:${this.region}:${this.account}:function:fable-${stage}-tool-*`],
+    })); // post-deploy QA (direct SDK invoke)
+    buildCompletionFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['bedrock:InvokeModel'],
+      resources: ['*'],
+    }));
 
     // EventBridge rule: ECS task stopped → completion Lambda
     new events.Rule(this, 'BuildTaskCompletionRule', {
@@ -1124,6 +1307,23 @@ export class FableStack extends cdk.Stack {
     chatFn.addEnvironment('WEBSOCKET_ENDPOINT', wsEndpoint);
     workflowExecutorFn.addEnvironment('WEBSOCKET_ENDPOINT', wsEndpoint);
     buildCompletionFn.addEnvironment('WEBSOCKET_ENDPOINT', wsEndpoint);
+    buildCompletionFn.addEnvironment('BUILD_KICKOFF_ARN', buildKickoffFn.functionArn);
+    buildCompletionFn.addEnvironment('MAX_BUILD_CYCLES', '5');
+    buildCompletionFn.addEnvironment('WORKFLOWS_TABLE', this.workflowsTable.tableName);
+    buildCompletionFn.addEnvironment('WORKFLOW_EXECUTOR_ARN', workflowExecutorFn.functionArn);
+    buildCompletionFn.addEnvironment('SCHEDULER_ROLE_ARN', schedulerRole.roleArn);
+
+    // Build-completion can create EventBridge schedules for cron workflows
+    buildCompletionFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['scheduler:CreateSchedule'],
+      resources: [`arn:aws:scheduler:${this.region}:${this.account}:schedule/default/fable-${stage}-wf-*`],
+    }));
+    buildCompletionFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['iam:PassRole'],
+      resources: [schedulerRole.roleArn],
+    }));
 
     // ============================================================
     // Outputs

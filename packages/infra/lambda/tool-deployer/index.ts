@@ -20,7 +20,9 @@ import * as https from 'https';
 const lambdaClient = new LambdaClient({});
 const s3Client = new S3Client({});
 const dynamoClient = new DynamoDBClient({});
-const docClient = DynamoDBDocumentClient.from(dynamoClient);
+const docClient = DynamoDBDocumentClient.from(dynamoClient, {
+  marshallOptions: { removeUndefinedValues: true },
+});
 
 const secretsClient = new SecretsManagerClient({});
 
@@ -40,6 +42,7 @@ interface DeployToolInput {
     description: string;
     inputSchema: Record<string, unknown>;
   };
+  uiDefinition?: Record<string, unknown>;
   memorySize?: number;
   timeout?: number;
   environment?: Record<string, string>;
@@ -75,6 +78,7 @@ interface BatchDeployPayload {
         description: string;
         inputSchema: Record<string, unknown>;
       };
+      uiDefinition?: Record<string, unknown>;
       // Git metadata (GitHub deployment method)
       gitPath?: string;
     }>;
@@ -179,6 +183,7 @@ async function deployBatch(payload: BatchDeployPayload): Promise<{ statusCode: n
         s3Key: tool.s3Key,
         description: tool.description,
         schema: tool.schema,
+        uiDefinition: tool.uiDefinition,
         orgId: orgId || '00000000-0000-0000-0000-000000000001',
         userId: userId || '00000000-0000-0000-0000-000000000001',
         // Git metadata from deployment info
@@ -271,6 +276,7 @@ async function deployTool(input: DeployToolInput): Promise<{ statusCode: number;
     s3Bucket: inputS3Bucket = ARTIFACTS_BUCKET,
     description = `FABLE-built tool: ${toolName}`,
     schema,
+    uiDefinition,
     memorySize = 256,
     timeout = 30,
     environment = {},
@@ -407,6 +413,8 @@ async function deployTool(input: DeployToolInput): Promise<{ statusCode: number;
       version: isUpdate ? { $add: 1 } : 1,
       GSI1PK: `TOOL#${toolName}`,
       GSI1SK: `ORG#${orgId}`,
+      // UI definition for dynamic frontend rendering
+      ...(uiDefinition && { uiDefinition }),
       // Git metadata (for GitHub-deployed tools)
       ...(gitRepo && { gitRepo }),
       ...(gitPath && { gitPath }),

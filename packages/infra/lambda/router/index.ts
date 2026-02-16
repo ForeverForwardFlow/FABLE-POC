@@ -1,12 +1,14 @@
 import { APIGatewayProxyHandler, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, DeleteCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { ApiGatewayManagementApiClient, PostToConnectionCommand } from '@aws-sdk/client-apigatewaymanagementapi';
 import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
 
 const dynamoClient = new DynamoDBClient({});
-const docClient = DynamoDBDocumentClient.from(dynamoClient);
+const docClient = DynamoDBDocumentClient.from(dynamoClient, {
+  marshallOptions: { removeUndefinedValues: true },
+});
 const lambdaClient = new LambdaClient({});
 const bedrockClient = new BedrockRuntimeClient({ region: 'us-west-2' });
 
@@ -22,6 +24,13 @@ interface ClientMessage {
     conversationId?: string;
   };
   requestId?: string;
+}
+
+interface ConversationSummary {
+  conversationId: string;
+  title: string;
+  updatedAt: string;
+  intent?: string;
 }
 
 interface Intent {
@@ -124,6 +133,44 @@ export const handler: APIGatewayProxyHandler = async (event): Promise<APIGateway
     if (message.type === 'unsubscribe_details') {
       await updateConnectionSubscription(connectionId, false);
       await sendToConnection(connectionId, { type: 'unsubscribed', channel: 'details' });
+      return { statusCode: 200, body: 'OK' };
+    }
+
+    // Handle conversation management
+    if (message.type === 'list_conversations') {
+      const connection = await getConnection(connectionId);
+      if (!connection) {
+        await sendToConnection(connectionId, { type: 'error', message: 'Connection not found' });
+        return { statusCode: 400, body: 'Connection not found' };
+      }
+      const conversations = await listConversations(connection.userId);
+      await sendToConnection(connectionId, { type: 'conversations_list', payload: { conversations } });
+      return { statusCode: 200, body: 'OK' };
+    }
+
+    if (message.type === 'load_conversation' && message.payload?.conversationId) {
+      const connection = await getConnection(connectionId);
+      if (!connection) {
+        await sendToConnection(connectionId, { type: 'error', message: 'Connection not found' });
+        return { statusCode: 400, body: 'Connection not found' };
+      }
+      const conversation = await loadFullConversation(connection.userId, message.payload.conversationId);
+      if (conversation) {
+        await sendToConnection(connectionId, { type: 'conversation_loaded', payload: conversation });
+      } else {
+        await sendToConnection(connectionId, { type: 'error', message: 'Conversation not found' });
+      }
+      return { statusCode: 200, body: 'OK' };
+    }
+
+    if (message.type === 'delete_conversation' && message.payload?.conversationId) {
+      const connection = await getConnection(connectionId);
+      if (!connection) {
+        await sendToConnection(connectionId, { type: 'error', message: 'Connection not found' });
+        return { statusCode: 400, body: 'Connection not found' };
+      }
+      await deleteConversation(connection.userId, message.payload.conversationId);
+      await sendToConnection(connectionId, { type: 'conversation_deleted', payload: { conversationId: message.payload.conversationId } });
       return { statusCode: 200, body: 'OK' };
     }
 
@@ -289,6 +336,47 @@ async function invokeLambda(functionName: string, payload: unknown) {
     FunctionName: functionName,
     InvocationType: 'Event', // Async invocation
     Payload: Buffer.from(JSON.stringify(payload)),
+  }));
+}
+
+async function listConversations(userId: string) {
+  const result = await docClient.send(new QueryCommand({
+    TableName: CONVERSATIONS_TABLE,
+    KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+    ExpressionAttributeValues: {
+      ':pk': `USER#${userId}`,
+      ':sk': 'CONV#',
+    },
+    ProjectionExpression: 'conversationId, title, updatedAt, intent',
+    ScanIndexForward: false, // newest first
+  }));
+
+  return (result.Items || [])
+    .sort((a, b) => (b.updatedAt as string).localeCompare(a.updatedAt as string))
+    .slice(0, 50); // cap at 50 conversations
+}
+
+async function loadFullConversation(userId: string, conversationId: string) {
+  const result = await docClient.send(new GetCommand({
+    TableName: CONVERSATIONS_TABLE,
+    Key: { PK: `USER#${userId}`, SK: `CONV#${conversationId}` },
+  }));
+
+  if (!result.Item) return null;
+
+  return {
+    conversationId: result.Item.conversationId,
+    title: result.Item.title,
+    messages: result.Item.messages || [],
+    activeBuildId: result.Item.activeBuildId || null,
+    updatedAt: result.Item.updatedAt,
+  };
+}
+
+async function deleteConversation(userId: string, conversationId: string) {
+  await docClient.send(new DeleteCommand({
+    TableName: CONVERSATIONS_TABLE,
+    Key: { PK: `USER#${userId}`, SK: `CONV#${conversationId}` },
   }));
 }
 

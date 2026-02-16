@@ -71,8 +71,8 @@ setup_github_auth
 
 # Setup MCP memory server configuration and hooks
 setup_mcp_config() {
-    if [ -z "$MEMORY_LAMBDA_URL" ]; then
-        echo "MEMORY_LAMBDA_URL not set, skipping MCP config"
+    if [ -z "$MEMORY_LAMBDA_NAME" ]; then
+        echo "MEMORY_LAMBDA_NAME not set, skipping MCP config"
         return
     fi
 
@@ -95,7 +95,8 @@ setup_mcp_config() {
       "command": "node",
       "args": ["/fable/mcp-sidecar/dist/index.js"],
       "env": {
-        "MEMORY_LAMBDA_URL": "$MEMORY_LAMBDA_URL",
+        "MEMORY_LAMBDA_NAME": "$MEMORY_LAMBDA_NAME",
+        "INFRA_OPS_LAMBDA_NAME": "${INFRA_OPS_LAMBDA_NAME:-}",
         "FABLE_BUILD_ID": "${FABLE_BUILD_ID:-unknown}",
         "FABLE_ORG_ID": "${FABLE_ORG_ID:-00000000-0000-0000-0000-000000000001}"
       }
@@ -154,7 +155,7 @@ HOOKEOF
 }
 EOF
 
-    echo "MCP memory server configured: $MEMORY_LAMBDA_URL"
+    echo "MCP memory server configured: $MEMORY_LAMBDA_NAME"
     echo "Memory reflection hook configured at: $HOOK_PATH"
 
     # Also copy .claude.json to work directory (Claude Code looks there too)
@@ -201,6 +202,14 @@ if [ ! -d ".git" ]; then
     git config user.name "FABLE"
 fi
 
+# Pull latest templates from S3 (falls back to Docker-baked version)
+if [ -n "$ARTIFACTS_BUCKET" ] && [ -n "$STAGE" ]; then
+    echo "=== Pulling latest templates from S3 ==="
+    aws s3 cp "s3://${ARTIFACTS_BUCKET}/templates/CLAUDE.md.builder" \
+        /fable/templates/CLAUDE.md.builder 2>/dev/null \
+        || echo "No S3 template found, using baked-in version"
+fi
+
 # Copy the CLAUDE.md template
 case "$PHASE" in
     builder)
@@ -233,21 +242,54 @@ echo "Claude CLI version:"
 claude --version || echo "Could not get version"
 echo ""
 
-# Builder prompt
-PROMPT="Read build-spec.json and implement the task as described in CLAUDE.md. Output the result to output.json"
+# Inner retry loop: iterate until build succeeds or max iterations reached
+MAX_ITERATIONS=${MAX_BUILDER_ITERATIONS:-3}
+ITER=1
 
-echo "Running Claude with prompt: $PROMPT"
-echo ""
+while [ $ITER -le $MAX_ITERATIONS ]; do
+    echo ""
+    echo "=== Builder Iteration $ITER of $MAX_ITERATIONS ==="
 
-# Run Claude Code
-# Note: `claude -p` buffers all output until completion (not a TTY).
-# For short tasks (CORE ~4min), output appears all at once when done.
-# For long tasks (OI ~10-60min), this means no CloudWatch output until completion.
-# The ECS task timeout (2 hours) is the safety net for genuine hangs.
-claude -p "$PROMPT" --dangerously-skip-permissions 2>&1 || {
-    EXIT_CODE=$?
-    echo "Claude exited with code: $EXIT_CODE"
-}
+    if [ $ITER -eq 1 ]; then
+        PROMPT="Read build-spec.json and implement the task as described in CLAUDE.md. Output the result to output.json"
+    else
+        PROMPT="Read build-spec.json and CLAUDE.md. Your previous attempt (iteration $((ITER-1))) failed. Read previous-attempt.json to understand what went wrong. Fix the issues and output the result to output.json"
+    fi
+
+    echo "Running Claude with prompt: $PROMPT"
+    echo ""
+
+    # Run Claude Code
+    # Note: `claude -p` buffers all output until completion (not a TTY).
+    claude -p "$PROMPT" --dangerously-skip-permissions 2>&1 || {
+        EXIT_CODE=$?
+        echo "Claude exited with code: $EXIT_CODE"
+    }
+
+    # Check if output.json exists and has status=success
+    if [ -f ./output.json ]; then
+        STATUS=$(jq -r '.status // "unknown"' ./output.json 2>/dev/null || echo "unknown")
+        if [ "$STATUS" = "success" ]; then
+            echo "=== Build succeeded on iteration $ITER ==="
+            break
+        fi
+        echo "=== Build reported status: $STATUS on iteration $ITER ==="
+        # Save failure context for next iteration
+        cp ./output.json ./previous-attempt.json
+    else
+        echo "=== No output.json produced on iteration $ITER ==="
+        echo "{\"failedIteration\":$ITER,\"failureReason\":\"No output.json produced\"}" > ./previous-attempt.json
+    fi
+
+    ITER=$((ITER + 1))
+done
+
+# Stamp iteration count into output.json before S3 upload
+if [ -f ./output.json ]; then
+    jq --arg i "$ITER" --arg m "$MAX_ITERATIONS" \
+        '. + {iteration:($i|tonumber),maxIterations:($m|tonumber)}' \
+        ./output.json > ./output-tmp.json && mv ./output-tmp.json ./output.json
+fi
 
 # Check for output and upload to S3
 if [ -f ./output.json ]; then
