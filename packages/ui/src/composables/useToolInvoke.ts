@@ -1,4 +1,5 @@
 import { ref } from 'vue';
+import { useAuthStore } from 'src/stores/auth-store';
 
 const MCP_API_URL = import.meta.env.VITE_MCP_API_URL
   || 'https://25d5630rjb.execute-api.us-west-2.amazonaws.com';
@@ -17,9 +18,16 @@ export function useToolInvoke() {
 
     const start = performance.now();
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      try {
+        const authStore = useAuthStore();
+        const token = await authStore.getToken();
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+      } catch { /* auth not available */ }
+
       const res = await fetch(`${MCP_API_URL}/tools/call`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ name: toolName, arguments: args }),
       });
 

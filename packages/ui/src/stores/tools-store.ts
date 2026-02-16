@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import type { FableTool } from '../types';
+import { useAuthStore } from './auth-store';
 
 interface ToolsState {
   tools: FableTool[];
@@ -36,7 +37,11 @@ export const useToolsStore = defineStore('tools', {
       this.error = null;
 
       try {
-        const res = await fetch(`${MCP_API_URL}/tools`);
+        const headers: Record<string, string> = {};
+        const token = await useAuthStore().getToken();
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+
+        const res = await fetch(`${MCP_API_URL}/tools`, { headers });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         const toolsList = data.tools || [];
@@ -70,9 +75,13 @@ export const useToolsStore = defineStore('tools', {
     },
 
     async deleteTool(name: string): Promise<void> {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const token = await useAuthStore().getToken();
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
       const res = await fetch(`${MCP_API_URL}/tools/delete`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ name }),
       });
 

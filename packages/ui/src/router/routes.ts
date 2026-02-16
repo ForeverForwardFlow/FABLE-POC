@@ -29,6 +29,11 @@ const routes: RouteRecordRaw[] = [
         path: 'workflows',
         name: 'workflows',
         component: () => import('src/pages/WorkflowsPage.vue')
+      },
+      {
+        path: 'auth/callback',
+        name: 'auth-callback',
+        component: () => import('src/pages/AuthCallbackPage.vue')
       }
     ]
   }

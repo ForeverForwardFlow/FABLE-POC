@@ -1,6 +1,7 @@
 import { boot } from 'quasar/wrappers';
 import { ref } from 'vue';
 import type { WsIncomingMessage } from '../types';
+import { useAuthStore } from 'src/stores/auth-store';
 
 // WebSocket endpoint — configurable via env or defaults to deployed endpoint
 const WS_URL = import.meta.env.VITE_WS_URL || 'wss://f9qynczzkj.execute-api.us-west-2.amazonaws.com/dev';
@@ -13,8 +14,19 @@ const messageHandlers: Array<(msg: WsIncomingMessage) => void> = [];
 function connect() {
   if (ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING) return;
 
+  // Append ID token as query param if authenticated
+  let url = WS_URL;
+  try {
+    const authStore = useAuthStore();
+    if (authStore.idToken) {
+      url = `${WS_URL}?token=${authStore.idToken}`;
+    }
+  } catch {
+    // Auth store may not be initialized yet during boot
+  }
+
   console.log('[FABLE] Connecting to', WS_URL);
-  ws = new WebSocket(WS_URL);
+  ws = new WebSocket(url);
 
   ws.onopen = () => {
     console.log('[FABLE] WebSocket connected');

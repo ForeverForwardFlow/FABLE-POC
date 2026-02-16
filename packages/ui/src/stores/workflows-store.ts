@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import type { WorkflowDefinition } from '../types';
+import { useAuthStore } from './auth-store';
 
 interface WorkflowsState {
   workflows: WorkflowDefinition[];
@@ -26,6 +27,13 @@ export const useWorkflowsStore = defineStore('workflows', {
   },
 
   actions: {
+    async _authHeaders(): Promise<Record<string, string>> {
+      const headers: Record<string, string> = {};
+      const token = await useAuthStore().getToken();
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      return headers;
+    },
+
     async fetchWorkflows(): Promise<void> {
       if (this.lastFetched && Date.now() - this.lastFetched < 30000) return;
 
@@ -33,7 +41,7 @@ export const useWorkflowsStore = defineStore('workflows', {
       this.error = null;
 
       try {
-        const res = await fetch(`${MCP_API_URL}/workflows`);
+        const res = await fetch(`${MCP_API_URL}/workflows`, { headers: await this._authHeaders() });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         this.workflows = (data.workflows || []) as WorkflowDefinition[];
@@ -49,7 +57,7 @@ export const useWorkflowsStore = defineStore('workflows', {
     async runWorkflow(workflowId: string, orgId: string): Promise<void> {
       const res = await fetch(`${MCP_API_URL}/workflows/run`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(await this._authHeaders()) },
         body: JSON.stringify({ workflowId, orgId }),
       });
 
@@ -62,7 +70,7 @@ export const useWorkflowsStore = defineStore('workflows', {
     async togglePause(workflowId: string, orgId: string, newStatus: 'active' | 'paused'): Promise<void> {
       const res = await fetch(`${MCP_API_URL}/workflows/pause`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(await this._authHeaders()) },
         body: JSON.stringify({ workflowId, orgId, status: newStatus }),
       });
 
@@ -79,7 +87,7 @@ export const useWorkflowsStore = defineStore('workflows', {
     async deleteWorkflow(workflowId: string, orgId: string): Promise<void> {
       const res = await fetch(`${MCP_API_URL}/workflows/delete`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(await this._authHeaders()) },
         body: JSON.stringify({ workflowId, orgId }),
       });
 

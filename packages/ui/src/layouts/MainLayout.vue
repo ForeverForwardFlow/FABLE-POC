@@ -8,6 +8,24 @@
           FABLE
         </q-toolbar-title>
         <q-btn flat dense round icon="settings" />
+        <template v-if="authStore.isAuthenticated">
+          <q-btn flat dense no-caps class="q-ml-sm">
+            <q-avatar size="28px" color="purple" text-color="white" class="q-mr-xs">
+              {{ authStore.user?.email?.[0]?.toUpperCase() || '?' }}
+            </q-avatar>
+            <q-menu dark>
+              <q-list style="min-width: 200px">
+                <q-item-label header>{{ authStore.user?.email }}</q-item-label>
+                <q-separator dark />
+                <q-item clickable v-close-popup @click="authStore.logout()">
+                  <q-item-section avatar><q-icon name="logout" /></q-item-section>
+                  <q-item-section>Sign out</q-item-section>
+                </q-item>
+              </q-list>
+            </q-menu>
+          </q-btn>
+        </template>
+        <q-btn v-else flat dense no-caps label="Sign in" color="purple" @click="authStore.login()" />
       </q-toolbar>
     </q-header>
 
@@ -103,11 +121,13 @@ import { useRouter } from 'vue-router';
 import { useUIStore } from 'src/stores/ui-store';
 import { useChatStore } from 'src/stores/chat-store';
 import { useConversationsStore } from 'src/stores/conversations-store';
+import { useAuthStore } from 'src/stores/auth-store';
 
 const router = useRouter();
 const uiStore = useUIStore();
 const chatStore = useChatStore();
 const conversationsStore = useConversationsStore();
+const authStore = useAuthStore();
 
 const sidebarOpen = computed({
   get: () => uiStore.sidebarOpen,
