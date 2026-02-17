@@ -537,20 +537,25 @@ async function findBuildRecord(buildId: string): Promise<Record<string, unknown>
   }
 
   // Fallback: scan table by buildId (covers all orgs)
+  // Must paginate — table may have >100 items
   try {
-    const scanResult = await docClient.send(new ScanCommand({
-      TableName: BUILDS_TABLE,
-      FilterExpression: 'buildId = :buildId',
-      ExpressionAttributeValues: {
-        ':buildId': buildId,
-      },
-      Limit: 100,
-    }));
+    let lastEvaluatedKey: Record<string, unknown> | undefined;
+    do {
+      const scanResult = await docClient.send(new ScanCommand({
+        TableName: BUILDS_TABLE,
+        FilterExpression: 'buildId = :buildId',
+        ExpressionAttributeValues: {
+          ':buildId': buildId,
+        },
+        ExclusiveStartKey: lastEvaluatedKey,
+      }));
 
-    if (scanResult.Items && scanResult.Items.length > 0) {
-      console.log('Found build record via table scan');
-      return scanResult.Items[0];
-    }
+      if (scanResult.Items && scanResult.Items.length > 0) {
+        console.log('Found build record via table scan');
+        return scanResult.Items[0];
+      }
+      lastEvaluatedKey = scanResult.LastEvaluatedKey as Record<string, unknown> | undefined;
+    } while (lastEvaluatedKey);
   } catch (err) {
     console.error('Fallback scan failed:', err);
   }

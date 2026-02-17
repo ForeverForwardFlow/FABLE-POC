@@ -144,31 +144,33 @@ If the build fails, write:
 If the build spec describes a **frontend fix** (UI bug, display issue, rendering problem, NOT a tool build):
 
 ### Steps
-1. Clone the FABLE repo (GitHub auth is pre-configured by entrypoint)
-2. Navigate to `packages/ui/`
+1. Clone the tools repo (GitHub auth is pre-configured by entrypoint) — the frontend lives here
+2. Navigate to `tools/fable-ui/`
 3. Read relevant source files to understand the current code
 4. Make the fix using Write/Edit tools
 5. Install dependencies: `npm install`
 6. Build: `npx quasar build`
 7. Deploy: `aws s3 sync dist/spa/ s3://$FRONTEND_BUCKET --delete`
 8. Invalidate CDN: `aws cloudfront create-invalidation --distribution-id $CLOUDFRONT_DISTRIBUTION_ID --paths "/*"`
-9. Write `output.json`:
+9. Commit and push your changes to the tools repo
+10. Write `output.json`:
 
 ```json
 {
   "status": "success",
   "fixType": "frontend",
   "description": "Fixed the percent formatting in ResultRenderer — values no longer multiplied by 100",
-  "filesChanged": ["packages/ui/src/components/tools/ResultRenderer.vue"]
+  "filesChanged": ["tools/fable-ui/src/components/tools/ResultRenderer.vue"]
 }
 ```
 
 ### Key Frontend Facts
+- **Location**: `tools/fable-ui/` in the tools repo (same repo as built tools)
 - **Framework**: Vue 3 + Quasar v2 + Pinia + TypeScript (strict mode)
 - **Dark theme**: CSS vars (`--ff-bg-card`, `--ff-text-primary`, `--ff-border`, `--ff-teal`, `--ff-radius-md`)
 - **Primary color**: Purple (`#a855f7`)
 - **Components**: `<script setup lang="ts">`, scoped SCSS, Quasar Q* components
-- **Source layout** (`packages/ui/src/`):
+- **Source layout** (`tools/fable-ui/src/`):
   - `pages/` — ChatPage, ToolsPage, ToolPage, WorkflowsPage, AuthCallbackPage
   - `components/tools/` — DynamicForm.vue (form renderer), ResultRenderer.vue (result display), ToolCard.vue
   - `components/chat/` — ChatMessage, ChatInput, BuildNotification
