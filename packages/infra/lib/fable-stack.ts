@@ -969,32 +969,38 @@ export class FableStack extends cdk.Stack {
       methods: [apigatewayv2.HttpMethod.POST],
       integration: mcpIntegration,
     });
+    // Authenticated tool/workflow mutation endpoints (require JWT)
     mcpHttpApi.addRoutes({
       path: '/tools/delete',
       methods: [apigatewayv2.HttpMethod.POST],
       integration: mcpIntegration,
+      authorizer: mcpJwtAuthorizer,
     });
 
-    // Public workflow endpoints (no auth — workflow listing + actions)
+    // Public workflow listing (scoped to ORG#default in Lambda)
     mcpHttpApi.addRoutes({
       path: '/workflows',
       methods: [apigatewayv2.HttpMethod.GET],
       integration: mcpIntegration,
     });
+    // Authenticated workflow mutation endpoints (require JWT)
     mcpHttpApi.addRoutes({
       path: '/workflows/run',
       methods: [apigatewayv2.HttpMethod.POST],
       integration: mcpIntegration,
+      authorizer: mcpJwtAuthorizer,
     });
     mcpHttpApi.addRoutes({
       path: '/workflows/pause',
       methods: [apigatewayv2.HttpMethod.POST],
       integration: mcpIntegration,
+      authorizer: mcpJwtAuthorizer,
     });
     mcpHttpApi.addRoutes({
       path: '/workflows/delete',
       methods: [apigatewayv2.HttpMethod.POST],
       integration: mcpIntegration,
+      authorizer: mcpJwtAuthorizer,
     });
 
     // ============================================================

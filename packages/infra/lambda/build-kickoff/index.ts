@@ -126,6 +126,8 @@ async function startBuild(request: BuildRequest): Promise<{ statusCode: number; 
           { name: 'FABLE_PHASE', value: 'builder' },
           { name: 'FABLE_BUILD_SPEC', value: JSON.stringify(buildSpec) },
           { name: 'FABLE_BUILD_ID', value: buildId },
+          { name: 'FABLE_ORG_ID', value: orgId },
+          { name: 'FABLE_USER_ID', value: userId },
         ],
       }],
     },

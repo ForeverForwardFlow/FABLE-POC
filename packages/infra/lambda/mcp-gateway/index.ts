@@ -5,12 +5,13 @@
  * Claude Code connects to this gateway, which dynamically discovers
  * and routes to tools registered in DynamoDB.
  *
- * This enables immediate tool uptake - new tools are available
- * as soon as they're registered, without restarting Claude Code.
+ * Multitenancy: All queries scoped by orgId extracted from JWT claims.
+ * Public (unauthenticated) routes see only ORG#default tools/workflows.
+ * Mutation routes (delete, run, pause) require JWT auth.
  */
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, ScanCommand, DeleteCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, DeleteCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { LambdaClient, InvokeCommand, DeleteFunctionCommand } from '@aws-sdk/client-lambda';
 
 const dynamoClient = new DynamoDBClient({});
@@ -25,6 +26,7 @@ const WORKFLOW_EXECUTOR_ARN = process.env.WORKFLOW_EXECUTOR_ARN!;
 const STAGE = process.env.STAGE || 'dev';
 const GATEWAY_NAME = 'fable-tools-gateway';
 const GATEWAY_VERSION = '1.0.0';
+const DEFAULT_ORG = 'default';
 
 interface McpRequest {
   jsonrpc: '2.0';
@@ -64,7 +66,24 @@ interface LambdaEvent {
       method: string;
       path?: string;
     };
+    authorizer?: {
+      jwt?: {
+        claims: Record<string, string>;
+      };
+    };
   };
+}
+
+/**
+ * Extract orgId from JWT claims. Falls back to 'default' for unauthenticated requests.
+ */
+function extractOrgId(event: LambdaEvent): string {
+  const claims = event.requestContext.authorizer?.jwt?.claims;
+  if (claims) {
+    // Cognito custom attributes come through as 'custom:orgId'
+    return claims['custom:orgId'] || DEFAULT_ORG;
+  }
+  return DEFAULT_ORG;
 }
 
 export const handler = async (event: LambdaEvent): Promise<{
@@ -82,13 +101,15 @@ export const handler = async (event: LambdaEvent): Promise<{
   if (requestPath.startsWith('/tools') || requestPath.startsWith('/workflows')) {
     headers['Access-Control-Allow-Origin'] = '*';
     headers['Access-Control-Allow-Methods'] = 'GET, POST, DELETE, OPTIONS';
-    headers['Access-Control-Allow-Headers'] = 'content-type';
+    headers['Access-Control-Allow-Headers'] = 'content-type, authorization';
   }
 
-  // Handle GET /tools — tool listing (browser-friendly)
+  const orgId = extractOrgId(event);
+
+  // Handle GET /tools — tool listing (browser-friendly, scoped by org)
   if (event.requestContext.http.method === 'GET' && (requestPath === '/tools' || requestPath === '/')) {
     try {
-      const response = await handleToolsList();
+      const response = await handleToolsList(orgId);
       return {
         statusCode: 200,
         headers,
@@ -104,7 +125,7 @@ export const handler = async (event: LambdaEvent): Promise<{
     }
   }
 
-  // Handle POST /tools/call — direct tool invocation from frontend
+  // Handle POST /tools/call — direct tool invocation from frontend (scoped by org)
   if (requestPath === '/tools/call' && event.requestContext.http.method === 'POST') {
     try {
       const body = JSON.parse(event.body);
@@ -112,7 +133,7 @@ export const handler = async (event: LambdaEvent): Promise<{
       if (!name) {
         return { statusCode: 400, headers, body: JSON.stringify({ error: 'Missing tool name' }) };
       }
-      const response = await handleToolsCall({ name, arguments: args || {} });
+      const response = await handleToolsCall({ name, arguments: args || {} }, orgId);
       if (response.error) {
         return { statusCode: 400, headers, body: JSON.stringify({ error: response.error.message }) };
       }
@@ -132,7 +153,7 @@ export const handler = async (event: LambdaEvent): Promise<{
     }
   }
 
-  // Handle DELETE /tools/delete — tool deletion from frontend
+  // Handle POST /tools/delete — tool deletion (JWT required, orgId from claims)
   if (requestPath === '/tools/delete' && event.requestContext.http.method === 'POST') {
     try {
       const body = JSON.parse(event.body);
@@ -140,7 +161,7 @@ export const handler = async (event: LambdaEvent): Promise<{
       if (!name) {
         return { statusCode: 400, headers, body: JSON.stringify({ error: 'Missing tool name' }) };
       }
-      await handleToolDelete(name);
+      await handleToolDelete(name, orgId);
       return { statusCode: 200, headers, body: JSON.stringify({ deleted: true, name }) };
     } catch (error) {
       console.error('Tool delete error:', error);
@@ -148,10 +169,10 @@ export const handler = async (event: LambdaEvent): Promise<{
     }
   }
 
-  // Handle GET /workflows — list all workflows
+  // Handle GET /workflows — list workflows (scoped by org)
   if (requestPath === '/workflows' && event.requestContext.http.method === 'GET') {
     try {
-      const workflows = await handleWorkflowsList();
+      const workflows = await handleWorkflowsList(orgId);
       return { statusCode: 200, headers, body: JSON.stringify({ workflows }) };
     } catch (error) {
       console.error('Workflows list error:', error);
@@ -159,13 +180,13 @@ export const handler = async (event: LambdaEvent): Promise<{
     }
   }
 
-  // Handle POST /workflows/run — trigger a workflow manually
+  // Handle POST /workflows/run — trigger workflow (JWT required, orgId from claims)
   if (requestPath === '/workflows/run' && event.requestContext.http.method === 'POST') {
     try {
       const body = JSON.parse(event.body);
-      const { workflowId, orgId } = body;
-      if (!workflowId || !orgId) {
-        return { statusCode: 400, headers, body: JSON.stringify({ error: 'Missing workflowId or orgId' }) };
+      const { workflowId } = body;
+      if (!workflowId) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: 'Missing workflowId' }) };
       }
       await handleWorkflowRun(workflowId, orgId);
       return { statusCode: 200, headers, body: JSON.stringify({ triggered: true, workflowId }) };
@@ -175,13 +196,13 @@ export const handler = async (event: LambdaEvent): Promise<{
     }
   }
 
-  // Handle POST /workflows/pause — toggle workflow active/paused
+  // Handle POST /workflows/pause — toggle workflow status (JWT required, orgId from claims)
   if (requestPath === '/workflows/pause' && event.requestContext.http.method === 'POST') {
     try {
       const body = JSON.parse(event.body);
-      const { workflowId, orgId, status } = body;
-      if (!workflowId || !orgId || !status) {
-        return { statusCode: 400, headers, body: JSON.stringify({ error: 'Missing workflowId, orgId, or status' }) };
+      const { workflowId, status } = body;
+      if (!workflowId || !status) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: 'Missing workflowId or status' }) };
       }
       await handleWorkflowStatusUpdate(workflowId, orgId, status);
       return { statusCode: 200, headers, body: JSON.stringify({ updated: true, workflowId, status }) };
@@ -191,13 +212,13 @@ export const handler = async (event: LambdaEvent): Promise<{
     }
   }
 
-  // Handle POST /workflows/delete — delete a workflow
+  // Handle POST /workflows/delete — delete workflow (JWT required, orgId from claims)
   if (requestPath === '/workflows/delete' && event.requestContext.http.method === 'POST') {
     try {
       const body = JSON.parse(event.body);
-      const { workflowId, orgId } = body;
-      if (!workflowId || !orgId) {
-        return { statusCode: 400, headers, body: JSON.stringify({ error: 'Missing workflowId or orgId' }) };
+      const { workflowId } = body;
+      if (!workflowId) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: 'Missing workflowId' }) };
       }
       await handleWorkflowDelete(workflowId, orgId);
       return { statusCode: 200, headers, body: JSON.stringify({ deleted: true, workflowId }) };
@@ -220,7 +241,7 @@ export const handler = async (event: LambdaEvent): Promise<{
     const request: McpRequest = JSON.parse(event.body);
     console.log(`MCP Gateway received: ${request.method}`);
 
-    const response = await handleMcpRequest(request);
+    const response = await handleMcpRequest(request, orgId);
 
     return {
       statusCode: 200,
@@ -243,7 +264,7 @@ export const handler = async (event: LambdaEvent): Promise<{
   }
 };
 
-async function handleMcpRequest(request: McpRequest): Promise<McpResponse> {
+async function handleMcpRequest(request: McpRequest, orgId: string): Promise<McpResponse> {
   const { method, params, id } = request;
 
   switch (method) {
@@ -268,10 +289,10 @@ async function handleMcpRequest(request: McpRequest): Promise<McpResponse> {
       return { jsonrpc: '2.0', id };
 
     case 'tools/list':
-      return await handleToolsList(id);
+      return await handleToolsList(orgId, id);
 
     case 'tools/call':
-      return await handleToolsCall(params as { name: string; arguments: Record<string, unknown> }, id);
+      return await handleToolsCall(params as { name: string; arguments: Record<string, unknown> }, orgId, id);
 
     case 'ping':
       return { jsonrpc: '2.0', id, result: {} };
@@ -288,16 +309,16 @@ async function handleMcpRequest(request: McpRequest): Promise<McpResponse> {
   }
 }
 
-async function handleToolsList(id?: string | number): Promise<McpResponse> {
-  console.log('Discovering tools from DynamoDB...');
+async function handleToolsList(orgId: string, id?: string | number): Promise<McpResponse> {
+  console.log(`Discovering tools for org: ${orgId}`);
 
   try {
-    // Query all tools across all orgs (for now - could filter by org later)
-    // Using Scan since we want all tools; for production, consider GSI
-    const result = await docClient.send(new ScanCommand({
+    // Query tools scoped to this org's partition
+    const result = await docClient.send(new QueryCommand({
       TableName: TOOLS_TABLE,
-      FilterExpression: 'begins_with(SK, :sk)',
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
       ExpressionAttributeValues: {
+        ':pk': `ORG#${orgId}`,
         ':sk': 'TOOL#',
       },
     }));
@@ -311,11 +332,11 @@ async function handleToolsList(id?: string | number): Promise<McpResponse> {
           type: 'object',
           properties: {},
         },
-        ...(item.uiDefinition && { uiDefinition: typeof item.uiDefinition === 'string' ? JSON.parse(item.uiDefinition) : item.uiDefinition }),
+        ...(item.uiDefinition && { uiDefinition: typeof item.uiDefinition === 'string' ? JSON.parse(item.uiDefinition as string) : item.uiDefinition }),
       };
     });
 
-    console.log(`Found ${tools.length} tools`);
+    console.log(`Found ${tools.length} tools for org ${orgId}`);
 
     return {
       jsonrpc: '2.0',
@@ -337,14 +358,15 @@ async function handleToolsList(id?: string | number): Promise<McpResponse> {
 
 async function handleToolsCall(
   params: { name: string; arguments: Record<string, unknown> },
+  orgId: string,
   id?: string | number
 ): Promise<McpResponse> {
   const { name, arguments: args } = params;
-  console.log(`Tool call: ${name}`);
+  console.log(`Tool call: ${name} (org: ${orgId})`);
 
   try {
-    // Find the tool in DynamoDB
-    const tool = await findTool(name);
+    // Find the tool scoped to this org
+    const tool = await findTool(name, orgId);
 
     if (!tool) {
       return {
@@ -357,7 +379,7 @@ async function handleToolsCall(
       };
     }
 
-    // Invoke the tool's Function URL
+    // Invoke the tool Lambda
     const result = await invokeToolFunction(tool, args);
 
     return {
@@ -385,12 +407,13 @@ async function handleToolsCall(
   }
 }
 
-async function findTool(name: string): Promise<FableTool | null> {
-  // Scan for the tool by name (could optimize with GSI)
-  const result = await docClient.send(new ScanCommand({
+async function findTool(name: string, orgId: string): Promise<FableTool | null> {
+  // Query by org partition + tool sort key prefix
+  const result = await docClient.send(new QueryCommand({
     TableName: TOOLS_TABLE,
-    FilterExpression: 'begins_with(SK, :sk)',
+    KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
     ExpressionAttributeValues: {
+      ':pk': `ORG#${orgId}`,
       ':sk': 'TOOL#',
     },
   }));
@@ -410,14 +433,17 @@ async function findTool(name: string): Promise<FableTool | null> {
   return null;
 }
 
-async function handleToolDelete(name: string): Promise<void> {
-  console.log(`Deleting tool: ${name}`);
+async function handleToolDelete(name: string, orgId: string): Promise<void> {
+  console.log(`Deleting tool: ${name} (org: ${orgId})`);
 
-  // Find all DynamoDB records for this tool (may exist in multiple orgs)
-  const result = await docClient.send(new ScanCommand({
+  // Find tool within this org only
+  const result = await docClient.send(new QueryCommand({
     TableName: TOOLS_TABLE,
-    FilterExpression: 'begins_with(SK, :sk)',
-    ExpressionAttributeValues: { ':sk': 'TOOL#' },
+    KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+    ExpressionAttributeValues: {
+      ':pk': `ORG#${orgId}`,
+      ':sk': 'TOOL#',
+    },
   }));
 
   const toDelete = (result.Items || []).filter((item) => {
@@ -442,7 +468,7 @@ async function handleToolDelete(name: string): Promise<void> {
     }
   }
 
-  // Delete all DynamoDB records for this tool
+  // Delete DynamoDB records for this tool within this org
   for (const item of toDelete) {
     await docClient.send(new DeleteCommand({
       TableName: TOOLS_TABLE,
@@ -453,17 +479,20 @@ async function handleToolDelete(name: string): Promise<void> {
 }
 
 // ============================================================
-// Workflow handlers
+// Workflow handlers (all scoped by orgId)
 // ============================================================
 
-async function handleWorkflowsList(): Promise<unknown[]> {
-  console.log('Listing workflows from DynamoDB...');
+async function handleWorkflowsList(orgId: string): Promise<unknown[]> {
+  console.log(`Listing workflows for org: ${orgId}`);
 
-  // Scan all orgs for now (small dataset). Query by org when auth is added.
-  const result = await docClient.send(new ScanCommand({
+  // Query workflows scoped to this org
+  const result = await docClient.send(new QueryCommand({
     TableName: WORKFLOWS_TABLE,
-    FilterExpression: 'begins_with(SK, :sk)',
-    ExpressionAttributeValues: { ':sk': 'WORKFLOW#' },
+    KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+    ExpressionAttributeValues: {
+      ':pk': `ORG#${orgId}`,
+      ':sk': 'WORKFLOW#',
+    },
   }));
 
   const workflows = (result.Items || []).map((item: Record<string, unknown>) => ({
@@ -482,12 +511,12 @@ async function handleWorkflowsList(): Promise<unknown[]> {
     updatedAt: item.updatedAt,
   }));
 
-  console.log(`Found ${workflows.length} workflows`);
+  console.log(`Found ${workflows.length} workflows for org ${orgId}`);
   return workflows;
 }
 
 async function handleWorkflowRun(workflowId: string, orgId: string): Promise<void> {
-  console.log(`Running workflow: ${workflowId}`);
+  console.log(`Running workflow: ${workflowId} (org: ${orgId})`);
 
   await lambdaClient.send(new InvokeCommand({
     FunctionName: WORKFLOW_EXECUTOR_ARN,
@@ -501,7 +530,7 @@ async function handleWorkflowRun(workflowId: string, orgId: string): Promise<voi
 }
 
 async function handleWorkflowStatusUpdate(workflowId: string, orgId: string, status: string): Promise<void> {
-  console.log(`Updating workflow ${workflowId} status to ${status}`);
+  console.log(`Updating workflow ${workflowId} status to ${status} (org: ${orgId})`);
 
   await docClient.send(new UpdateCommand({
     TableName: WORKFLOWS_TABLE,
@@ -517,7 +546,7 @@ async function handleWorkflowStatusUpdate(workflowId: string, orgId: string, sta
 }
 
 async function handleWorkflowDelete(workflowId: string, orgId: string): Promise<void> {
-  console.log(`Deleting workflow: ${workflowId}`);
+  console.log(`Deleting workflow: ${workflowId} (org: ${orgId})`);
 
   await docClient.send(new DeleteCommand({
     TableName: WORKFLOWS_TABLE,
