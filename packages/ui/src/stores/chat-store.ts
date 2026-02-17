@@ -166,6 +166,7 @@ export const useChatStore = defineStore('chat', {
             toolMsg.metadata.toolUses.push({
               toolName: msg.payload.toolName,
               toolId: msg.payload.toolId,
+              input: msg.payload.input,
             });
           } else {
             // No fable message yet — create a placeholder
@@ -178,6 +179,7 @@ export const useChatStore = defineStore('chat', {
                 toolUses: [{
                   toolName: msg.payload.toolName,
                   toolId: msg.payload.toolId,
+                  input: msg.payload.input,
                 }],
               },
             });

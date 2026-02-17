@@ -5,21 +5,11 @@
         v-if="message.metadata?.toolUses?.length"
         class="chat-message__tools"
       >
-        <span
+        <ToolUseBlock
           v-for="tu in message.metadata.toolUses"
           :key="tu.toolId"
-          class="tool-chip"
-          :title="tu.result ? JSON.stringify(tu.result, null, 2) : 'Running...'"
-        >
-          <q-icon name="build" size="14px" />
-          {{ tu.toolName }}
-          <q-icon
-            v-if="tu.result"
-            name="check_circle"
-            size="14px"
-            class="tool-chip__done"
-          />
-        </span>
+          :tool-use="tu"
+        />
       </div>
       <div
         v-if="message.role === 'fable'"
@@ -66,10 +56,11 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { marked } from 'marked';
-import type { ChatMessage, Action, ToolUse } from 'src/types';
+import type { ChatMessage, Action } from 'src/types';
 import ProgressBar from './ProgressBar.vue';
 import PhaseBadge from './PhaseBadge.vue';
 import ActionButton from './ActionButton.vue';
+import ToolUseBlock from './ToolUseBlock.vue';
 
 // Configure marked for safe, compact output
 marked.setOptions({ breaks: true, gfm: true });
@@ -158,10 +149,7 @@ const renderedContent = computed(() => {
   }
 
   &__tools {
-    display: flex;
-    gap: 6px;
     margin-bottom: 8px;
-    flex-wrap: wrap;
   }
 
   &__actions {
@@ -172,19 +160,4 @@ const renderedContent = computed(() => {
   }
 }
 
-.tool-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 10px;
-  border-radius: 12px;
-  font-size: 12px;
-  background: rgba(var(--q-primary-rgb, 25, 118, 210), 0.12);
-  color: var(--q-primary, #1976d2);
-  font-weight: 500;
-
-  &__done {
-    color: #4caf50;
-  }
-}
 </style>

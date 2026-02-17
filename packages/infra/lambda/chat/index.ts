@@ -185,7 +185,7 @@ export const handler = async (event: ChatEvent): Promise<void> => {
           // Notify client about tool use
           await sendToConnection(connectionId, {
             type: 'tool_use',
-            payload: { toolName: block.name, toolId: block.id, messageId },
+            payload: { toolName: block.name, toolId: block.id, messageId, input: block.input },
             requestId,
           });
 

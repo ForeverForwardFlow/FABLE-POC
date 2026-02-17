@@ -12,6 +12,7 @@ export interface Action {
 export interface ToolUse {
   toolName: string;
   toolId: string;
+  input?: Record<string, unknown>;
   result?: unknown;
 }
 
@@ -164,7 +165,7 @@ export type WsIncomingMessage =
   | { type: 'build_completed'; payload: { buildId: string; tools: Array<{ toolName: string; functionUrl: string; schema: unknown }> } }
   | { type: 'build_failed'; payload: { buildId: string; error: string } }
   | { type: 'build_needs_help'; payload: { buildId: string; message: string } }
-  | { type: 'tool_use'; payload: { toolName: string; toolId: string; messageId: string } }
+  | { type: 'tool_use'; payload: { toolName: string; toolId: string; messageId: string; input?: Record<string, unknown> } }
   | { type: 'tool_result'; payload: { toolId: string; result: unknown; messageId: string } }
   | { type: 'conversations_list'; payload: { conversations: ConversationSummary[] } }
   | { type: 'conversation_loaded'; payload: ConversationFull }
