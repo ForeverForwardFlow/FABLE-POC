@@ -680,10 +680,10 @@ export class FableStack extends cdk.Stack {
     this.artifactsBucket.grantRead(toolDeployerFn);
     githubSecret.grantRead(toolDeployerFn);
 
-    // Grant FABLE Lambdas permission to invoke deployed tools via Function URL
+    // Grant FABLE Lambdas permission to invoke deployed tools (direct SDK + Function URL)
     const invokeToolsPolicy = new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['lambda:InvokeFunctionUrl'],
+      actions: ['lambda:InvokeFunction', 'lambda:InvokeFunctionUrl'],
       resources: [`arn:aws:lambda:${this.region}:${this.account}:function:fable-${stage}-tool-*`],
     });
     chatFn.addToRolePolicy(invokeToolsPolicy);

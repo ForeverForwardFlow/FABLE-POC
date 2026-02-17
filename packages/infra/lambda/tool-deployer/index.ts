@@ -184,8 +184,8 @@ async function deployBatch(payload: BatchDeployPayload): Promise<{ statusCode: n
         description: tool.description,
         schema: tool.schema,
         uiDefinition: tool.uiDefinition,
-        orgId: orgId || '00000000-0000-0000-0000-000000000001',
-        userId: userId || '00000000-0000-0000-0000-000000000001',
+        orgId: orgId || 'default',
+        userId: userId || 'default',
         // Git metadata from deployment info
         gitRepo: isGitHubDeploy ? deployment.repo : undefined,
         gitPath: tool.gitPath || (isGitHubDeploy ? `tools/${tool.toolName}` : undefined),
@@ -280,8 +280,8 @@ async function deployTool(input: DeployToolInput): Promise<{ statusCode: number;
     memorySize = 256,
     timeout = 30,
     environment = {},
-    orgId = '00000000-0000-0000-0000-000000000001',
-    userId = '00000000-0000-0000-0000-000000000001',
+    orgId = 'default',
+    userId = 'default',
     // Git metadata
     gitRepo,
     gitPath,
@@ -443,7 +443,7 @@ async function deployTool(input: DeployToolInput): Promise<{ statusCode: number;
 async function undeployTool(input: UndeployToolInput): Promise<{ statusCode: number; body: string }> {
   const {
     toolName,
-    orgId = '00000000-0000-0000-0000-000000000001',
+    orgId = 'default',
   } = input;
 
   const functionName = `fable-${STAGE}-tool-${toolName.toLowerCase().replace(/[^a-z0-9-]/g, '-')}`;

@@ -4,9 +4,6 @@ import { ApiGatewayManagementApiClient, PostToConnectionCommand } from '@aws-sdk
 import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { SchedulerClient, CreateScheduleCommand, DeleteScheduleCommand, UpdateScheduleCommand, GetScheduleCommand } from '@aws-sdk/client-scheduler';
-import { SignatureV4 } from '@smithy/signature-v4';
-import { Sha256 } from '@aws-crypto/sha256-js';
-import { defaultProvider } from '@aws-sdk/credential-provider-node';
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient, {
@@ -360,62 +357,33 @@ async function discoverTools(orgId: string): Promise<FableTool[]> {
 }
 
 async function invokeToolFunction(tool: FableTool, input: Record<string, unknown>): Promise<unknown> {
-  console.log(`Invoking tool ${tool.toolName} at ${tool.functionUrl}`);
+  // Derive function name from tool name (matches tool-deployer pattern)
+  const functionName = `fable-${STAGE}-tool-${tool.toolName}`;
+  console.log(`Invoking tool ${tool.toolName} via Lambda: ${functionName}`);
 
-  // Build MCP JSON-RPC request
-  const mcpRequest = {
-    jsonrpc: '2.0',
-    method: 'tools/call',
-    params: {
-      name: tool.schema.name,
-      arguments: input,
-    },
-    id: Date.now(),
-  };
+  // Send arguments directly — FABLE-built tools expect { arguments: {...} }
+  const response = await lambdaClient.send(new InvokeCommand({
+    FunctionName: functionName,
+    Payload: Buffer.from(JSON.stringify({ arguments: input })),
+  }));
 
-  // Sign the request with IAM (Function URLs use AWS_IAM auth)
-  const url = new URL(tool.functionUrl);
-  const signer = new SignatureV4({
-    credentials: defaultProvider(),
-    region: 'us-west-2',
-    service: 'lambda',
-    sha256: Sha256,
-  });
-
-  const requestBody = JSON.stringify(mcpRequest);
-
-  const signedRequest = await signer.sign({
-    method: 'POST',
-    hostname: url.hostname,
-    path: url.pathname,
-    protocol: url.protocol,
-    headers: {
-      'Content-Type': 'application/json',
-      host: url.hostname,
-    },
-    body: requestBody,
-  });
-
-  // Make the request
-  const response = await fetch(tool.functionUrl, {
-    method: 'POST',
-    headers: signedRequest.headers as Record<string, string>,
-    body: requestBody,
-  });
-
-  if (!response.ok) {
-    throw new Error(`Tool invocation failed: ${response.status} ${response.statusText}`);
+  if (response.FunctionError) {
+    const errorPayload = response.Payload
+      ? JSON.parse(new TextDecoder().decode(response.Payload))
+      : { errorMessage: 'Unknown error' };
+    throw new Error(`Tool ${tool.toolName} failed: ${errorPayload.errorMessage || response.FunctionError}`);
   }
 
-  const result = await response.json() as { result?: unknown; error?: { message?: string } };
+  if (!response.Payload) {
+    throw new Error(`Tool ${tool.toolName} returned no payload`);
+  }
 
-  // Extract result from MCP response
-  if (result.result) {
-    return result.result;
-  }
-  if (result.error) {
-    throw new Error(result.error.message || 'Tool returned error');
-  }
+  const lambdaResult = JSON.parse(new TextDecoder().decode(response.Payload));
+
+  // Parse the body from the Lambda response (tools return { statusCode, body })
+  const result = typeof lambdaResult.body === 'string'
+    ? JSON.parse(lambdaResult.body)
+    : lambdaResult.body || lambdaResult;
 
   return result;
 }
@@ -538,14 +506,16 @@ async function sendToConnection(connectionId: string, message: unknown): Promise
       Data: Buffer.from(JSON.stringify(message)),
     }));
   } catch (error: unknown) {
-    if ((error as { name?: string }).name === 'GoneException') {
+    const errName = (error as { name?: string }).name;
+    if (errName === 'GoneException') {
       console.log(`Connection ${connectionId} is gone, cleaning up`);
       await docClient.send(new DeleteCommand({
         TableName: CONNECTIONS_TABLE,
         Key: { connectionId },
       }));
     } else {
-      throw error;
+      // Log but don't throw — connection errors shouldn't abort tool invocation
+      console.warn(`Failed to send to connection ${connectionId}: ${errName}`);
     }
   }
 }

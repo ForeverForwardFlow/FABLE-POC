@@ -64,7 +64,7 @@ async function startBuild(request: BuildRequest): Promise<{ statusCode: number; 
     request: buildRequest,
     spec,
     userId = '00000000-0000-0000-0000-000000000001',
-    orgId = '00000000-0000-0000-0000-000000000001',
+    orgId = 'default',
     conversationId,
     connectionId,
     buildCycle = 1,
