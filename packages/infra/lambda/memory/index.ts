@@ -97,7 +97,7 @@ export interface SearchMemoriesInput {
 
 // Event types
 interface MemoryEvent {
-  action: 'create' | 'search' | 'list' | 'get' | 'update' | 'delete' | 'boost' | 'relate' | 'session_start' | 'pin';
+  action: 'create' | 'search' | 'list' | 'get' | 'update' | 'delete' | 'boost' | 'relate' | 'session_start' | 'pin' | 'decay';
   payload: unknown;
 }
 
@@ -320,6 +320,10 @@ export const handler = async (event: unknown): Promise<{ statusCode: number; bod
 
       case 'relate':
         result = await relateMemories(db, payload as { fromId: string; toId: string; type: string });
+        break;
+
+      case 'decay':
+        result = await decayMemories(db);
         break;
 
       // MCP Protocol handlers
@@ -631,6 +635,16 @@ async function pinMemory(db: Pool, input: { id: string; pinned?: boolean }): Pro
       id: result.rows[0].id,
       pinned: result.rows[0].pinned,
     }),
+  };
+}
+
+async function decayMemories(db: Pool): Promise<{ statusCode: number; body: string }> {
+  const result = await db.query(`SELECT decay_memories() AS affected`);
+  const affected = result.rows[0]?.affected || 0;
+  console.log(`Memory decay: ${affected} memories decayed`);
+  return {
+    statusCode: 200,
+    body: JSON.stringify({ success: true, affected }),
   };
 }
 

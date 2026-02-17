@@ -168,6 +168,12 @@ export class FableStack extends cdk.Stack {
       sortKey: { name: 'GSI1SK', type: dynamodb.AttributeType.STRING },
     });
 
+    // GSI for builds by buildId (used by build-completion to find records without knowing orgId)
+    this.buildsTable.addGlobalSecondaryIndex({
+      indexName: 'GSI2-buildId',
+      partitionKey: { name: 'buildId', type: dynamodb.AttributeType.STRING },
+    });
+
     // Tools table
     this.toolsTable = new dynamodb.Table(this, 'ToolsTable', {
       tableName: `fable-${stage}-tools`,
@@ -603,6 +609,21 @@ export class FableStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'MemoryLambdaUrl', {
       value: memoryFnUrl.url,
       description: 'Memory Lambda Function URL for MCP',
+    });
+
+    // Weekly memory decay schedule
+    new events.Rule(this, 'MemoryDecayRule', {
+      ruleName: `fable-${stage}-memory-decay`,
+      description: 'Run memory decay weekly to reduce importance of stale memories',
+      schedule: events.Schedule.rate(cdk.Duration.days(7)),
+      targets: [
+        new eventsTargets.LambdaFunction(memoryFn, {
+          event: events.RuleTargetInput.fromObject({
+            action: 'decay',
+            payload: {},
+          }),
+        }),
+      ],
     });
 
     // ============================================================

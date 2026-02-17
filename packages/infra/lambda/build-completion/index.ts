@@ -1,7 +1,7 @@
 import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ApiGatewayManagementApiClient, PostToConnectionCommand } from '@aws-sdk/client-apigatewaymanagementapi';
 import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
 import { SchedulerClient, CreateScheduleCommand } from '@aws-sdk/client-scheduler';
@@ -536,28 +536,23 @@ async function findBuildRecord(buildId: string): Promise<Record<string, unknown>
     console.log('Default org lookup failed:', err);
   }
 
-  // Fallback: scan table by buildId (covers all orgs)
-  // Must paginate — table may have >100 items
+  // Fallback: query GSI2-buildId (covers all orgs without scanning)
   try {
-    let lastEvaluatedKey: Record<string, unknown> | undefined;
-    do {
-      const scanResult = await docClient.send(new ScanCommand({
-        TableName: BUILDS_TABLE,
-        FilterExpression: 'buildId = :buildId',
-        ExpressionAttributeValues: {
-          ':buildId': buildId,
-        },
-        ExclusiveStartKey: lastEvaluatedKey,
-      }));
+    const gsiResult = await docClient.send(new QueryCommand({
+      TableName: BUILDS_TABLE,
+      IndexName: 'GSI2-buildId',
+      KeyConditionExpression: 'buildId = :buildId',
+      ExpressionAttributeValues: {
+        ':buildId': buildId,
+      },
+    }));
 
-      if (scanResult.Items && scanResult.Items.length > 0) {
-        console.log('Found build record via table scan');
-        return scanResult.Items[0];
-      }
-      lastEvaluatedKey = scanResult.LastEvaluatedKey as Record<string, unknown> | undefined;
-    } while (lastEvaluatedKey);
+    if (gsiResult.Items && gsiResult.Items.length > 0) {
+      console.log('Found build record via buildId GSI');
+      return gsiResult.Items[0];
+    }
   } catch (err) {
-    console.error('Fallback scan failed:', err);
+    console.error('GSI lookup failed:', err);
   }
 
   return null;

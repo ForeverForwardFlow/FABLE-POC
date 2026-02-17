@@ -321,7 +321,7 @@ Update this section as work progresses:
 
 | Phase | Status | Notes |
 |-------|--------|-------|
-| Phase 1: Multitenancy | IN PROGRESS | 1.1-1.6 DONE. Remaining: 1.7 (buildId GSI), 1.8 (memory decay) |
+| Phase 1: Multitenancy | COMPLETE | All 8 items done. GSI deployed, decay scheduled weekly. |
 | Phase 2: Memory Experience | NOT STARTED | |
 | Phase 3: Chat UX | PARTIALLY DONE | ToolUseBlock, ChatInput, markdown done |
 | Phase 4: Build Pipeline | NOT STARTED | |
