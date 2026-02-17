@@ -21,7 +21,12 @@
           />
         </span>
       </div>
-      <div class="chat-message__content">{{ message.content }}</div>
+      <div
+        v-if="message.role === 'fable'"
+        class="chat-message__content markdown-body"
+        v-html="renderedContent"
+      />
+      <div v-else class="chat-message__content">{{ message.content }}</div>
 
       <ProgressBar
         v-if="message.metadata?.progress !== undefined"
@@ -60,10 +65,14 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
+import { marked } from 'marked';
 import type { ChatMessage, Action, ToolUse } from 'src/types';
 import ProgressBar from './ProgressBar.vue';
 import PhaseBadge from './PhaseBadge.vue';
 import ActionButton from './ActionButton.vue';
+
+// Configure marked for safe, compact output
+marked.setOptions({ breaks: true, gfm: true });
 
 const props = defineProps<{
   message: ChatMessage;
@@ -81,6 +90,11 @@ const messageClass = computed(() => ({
 const bubbleClass = computed(() =>
   props.message.role === 'user' ? 'user-message' : 'assistant-message'
 );
+
+const renderedContent = computed(() => {
+  if (!props.message.content) return '';
+  return marked.parse(props.message.content) as string;
+});
 </script>
 
 <style lang="scss" scoped>
@@ -99,6 +113,40 @@ const bubbleClass = computed(() =>
   &__content {
     white-space: pre-wrap;
     word-break: break-word;
+
+    &.markdown-body {
+      white-space: normal;
+
+      :deep(p) {
+        margin: 0 0 0.5em;
+        &:last-child { margin-bottom: 0; }
+      }
+      :deep(strong) { font-weight: 600; }
+      :deep(ul), :deep(ol) {
+        margin: 0.25em 0 0.5em;
+        padding-left: 1.5em;
+      }
+      :deep(li) { margin-bottom: 0.15em; }
+      :deep(code) {
+        background: rgba(255,255,255,0.08);
+        padding: 1px 4px;
+        border-radius: 3px;
+        font-size: 0.9em;
+      }
+      :deep(pre) {
+        background: rgba(0,0,0,0.3);
+        padding: 8px 12px;
+        border-radius: 6px;
+        overflow-x: auto;
+        margin: 0.5em 0;
+        code { background: none; padding: 0; }
+      }
+      :deep(h1), :deep(h2), :deep(h3) {
+        margin: 0.5em 0 0.25em;
+        font-size: 1em;
+        font-weight: 600;
+      }
+    }
   }
 
   &__progress {
