@@ -138,3 +138,48 @@ If the build fails, write:
   "error": "Description of what went wrong"
 }
 ```
+
+## Frontend Fix Builds
+
+If the build spec describes a **frontend fix** (UI bug, display issue, rendering problem, NOT a tool build):
+
+### Steps
+1. Clone the FABLE repo (GitHub auth is pre-configured by entrypoint)
+2. Navigate to `packages/ui/`
+3. Read relevant source files to understand the current code
+4. Make the fix using Write/Edit tools
+5. Install dependencies: `npm install`
+6. Build: `npx quasar build`
+7. Deploy: `aws s3 sync dist/spa/ s3://$FRONTEND_BUCKET --delete`
+8. Invalidate CDN: `aws cloudfront create-invalidation --distribution-id $CLOUDFRONT_DISTRIBUTION_ID --paths "/*"`
+9. Write `output.json`:
+
+```json
+{
+  "status": "success",
+  "fixType": "frontend",
+  "description": "Fixed the percent formatting in ResultRenderer — values no longer multiplied by 100",
+  "filesChanged": ["packages/ui/src/components/tools/ResultRenderer.vue"]
+}
+```
+
+### Key Frontend Facts
+- **Framework**: Vue 3 + Quasar v2 + Pinia + TypeScript (strict mode)
+- **Dark theme**: CSS vars (`--ff-bg-card`, `--ff-text-primary`, `--ff-border`, `--ff-teal`, `--ff-radius-md`)
+- **Primary color**: Purple (`#a855f7`)
+- **Components**: `<script setup lang="ts">`, scoped SCSS, Quasar Q* components
+- **Source layout** (`packages/ui/src/`):
+  - `pages/` — ChatPage, ToolsPage, ToolPage, WorkflowsPage, AuthCallbackPage
+  - `components/tools/` — DynamicForm.vue (form renderer), ResultRenderer.vue (result display), ToolCard.vue
+  - `components/chat/` — ChatMessage, ChatInput, BuildNotification
+  - `stores/` — auth-store, tools-store, workflows-store, chat-store, ws-store (all Pinia)
+  - `composables/` — useToolInvoke.ts (tool invocation with loading/error state)
+  - `layouts/` — MainLayout.vue (sidebar nav, header, auth UI)
+  - `router/` — routes.ts (/, /tools, /tools/:name, /workflows, /auth/callback)
+- **Build output**: `dist/spa/` (~1.1MB)
+- **Quasar plugins**: Notify, Dialog, Loading, LocalStorage
+
+### Environment Variables
+- `FRONTEND_BUCKET` — S3 bucket for frontend assets
+- `CLOUDFRONT_DISTRIBUTION_ID` — CloudFront distribution to invalidate
+- Git auth is configured by entrypoint (GitHub App credentials from Secrets Manager)

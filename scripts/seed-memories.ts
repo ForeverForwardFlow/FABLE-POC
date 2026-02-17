@@ -738,6 +738,57 @@ Workflows are metadata, not code. Just a prompt + tool references + schedule. Cr
     source: 'ai_inferred',
     project: 'FABLE',
   },
+
+  // ============================
+  // Frontend Self-Modification
+  // ============================
+  {
+    type: 'pattern',
+    content: 'Frontend fix deploy commands: `cd packages/ui && npm install && npx quasar build && aws s3 sync dist/spa/ s3://$FRONTEND_BUCKET --delete && aws cloudfront create-invalidation --distribution-id $CLOUDFRONT_DISTRIBUTION_ID --paths "/*"`. Always install deps before building — node_modules is not pre-installed.',
+    tags: ['frontend', 'deploy', 'builder'],
+    importance: 0.9,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+    pinned: true,
+  },
+  {
+    type: 'insight',
+    content: 'Frontend source is Vue 3 + Quasar v2 + Pinia + TypeScript in packages/ui/src/ (~34 files). Key files: ResultRenderer.vue (tool result display with cards/table/json), DynamicForm.vue (renders form from uiDefinition), ToolCard.vue (tool grid card), MainLayout.vue (sidebar nav + auth), ToolPage.vue (individual tool page with form → invoke → result).',
+    tags: ['frontend', 'architecture', 'builder'],
+    importance: 0.85,
+    scope: 'project',
+    source: 'user_stated',
+    project: 'FABLE',
+    pinned: true,
+  },
+  {
+    type: 'gotcha',
+    content: 'ResultRenderer.vue percent format: tools return percentages as whole numbers (40 means 40%, not 0.40). The formatValue function for "percent" format must NOT multiply by 100 — just append "%" to the value. This was a real bug that shipped.',
+    tags: ['frontend', 'formatting', 'gotcha'],
+    importance: 0.8,
+    scope: 'project',
+    source: 'ai_corrected',
+    project: 'FABLE',
+  },
+  {
+    type: 'pattern',
+    content: 'Frontend CSS uses CSS variables for theming: --ff-bg-card (card backgrounds), --ff-text-primary (main text), --ff-text-secondary, --ff-text-muted (labels), --ff-border (borders), --ff-teal (accents), --ff-radius-md (border radius). Dark theme is default. Primary color is purple (#a855f7). Use Quasar Q* components (QBtn, QInput, QCard, etc.) over raw HTML.',
+    tags: ['frontend', 'styling', 'conventions'],
+    importance: 0.7,
+    scope: 'project',
+    source: 'ai_inferred',
+    project: 'FABLE',
+  },
+  {
+    type: 'insight',
+    content: 'Frontend env vars are baked at build time (Vite): VITE_WS_URL (WebSocket API), VITE_MCP_API_URL (MCP HTTP API for tools), VITE_COGNITO_DOMAIN, VITE_COGNITO_CLIENT_ID. For frontend fix builds, these are NOT set as env vars — defaults are hardcoded in the source. Only rebuild needed, no env configuration.',
+    tags: ['frontend', 'config', 'builder'],
+    importance: 0.7,
+    scope: 'project',
+    source: 'ai_inferred',
+    project: 'FABLE',
+  },
 ];
 
 async function createMemoryViaHttp(memory: Memory): Promise<boolean> {

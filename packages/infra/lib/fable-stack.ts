@@ -1058,6 +1058,14 @@ export class FableStack extends cdk.Stack {
     // Permission to invoke Infra-Ops Lambda (direct SDK invoke for MCP sidecar)
     infraOpsFn.grantInvoke(buildTaskRole);
 
+    // Frontend deployment permissions (S3 + CloudFront)
+    frontendBucket.grantReadWrite(buildTaskRole);
+    buildTaskRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['cloudfront:CreateInvalidation'],
+      resources: [`arn:aws:cloudfront::${this.account}:distribution/${frontendDistribution.distributionId}`],
+    }));
+
     // CloudWatch Logs permissions (scoped to fable build log groups)
     buildTaskRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
@@ -1110,6 +1118,8 @@ export class FableStack extends cdk.Stack {
         GITHUB_SECRET_ARN: githubSecret.secretArn,
         MEMORY_LAMBDA_NAME: memoryFn.functionName,
         INFRA_OPS_LAMBDA_NAME: infraOpsFn.functionName,
+        FRONTEND_BUCKET: frontendBucket.bucketName,
+        CLOUDFRONT_DISTRIBUTION_ID: frontendDistribution.distributionId,
         MAX_BUILDER_ITERATIONS: '3',
       },
     });

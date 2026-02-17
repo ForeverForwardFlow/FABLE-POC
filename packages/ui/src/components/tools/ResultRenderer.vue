@@ -87,7 +87,7 @@ function formatValue(val: unknown, format?: string): string {
     case 'number':
       return typeof val === 'number' ? val.toLocaleString() : String(val);
     case 'percent':
-      return typeof val === 'number' ? `${(val * 100).toFixed(1)}%` : String(val);
+      return typeof val === 'number' ? `${val}%` : String(val);
     case 'badge':
       return String(val).toUpperCase();
     default:

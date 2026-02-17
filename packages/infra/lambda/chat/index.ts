@@ -75,6 +75,24 @@ interface BedrockTool {
   };
 }
 
+// Strip oneOf/allOf/anyOf from tool schemas — Bedrock doesn't support them
+function sanitizeSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  const cleaned = { ...schema };
+  delete cleaned.oneOf;
+  delete cleaned.allOf;
+  delete cleaned.anyOf;
+  // Recursively clean nested properties
+  if (cleaned.properties && typeof cleaned.properties === 'object') {
+    const props = cleaned.properties as Record<string, Record<string, unknown>>;
+    const cleanedProps: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(props)) {
+      cleanedProps[key] = typeof value === 'object' && value !== null ? sanitizeSchema(value) : value;
+    }
+    cleaned.properties = cleanedProps;
+  }
+  return cleaned;
+}
+
 export const handler = async (event: ChatEvent): Promise<void> => {
   const { connectionId, message, userId, orgId, context, intent, requestId } = event;
 
@@ -95,11 +113,12 @@ export const handler = async (event: ChatEvent): Promise<void> => {
     const systemPrompt = buildSystemPrompt(memories, context, intent, tools);
 
     // Convert tools to Bedrock format (external + internal workflow tools)
+    // Sanitize schemas — Bedrock doesn't support oneOf/allOf/anyOf
     const bedrockTools: BedrockTool[] = [
       ...tools.map(t => ({
         name: t.schema.name,
         description: t.schema.description,
-        input_schema: (t.schema.inputSchema || { type: 'object', properties: {} }) as BedrockTool['input_schema'],
+        input_schema: sanitizeSchema(t.schema.inputSchema || { type: 'object', properties: {} }) as BedrockTool['input_schema'],
       })),
       ...INTERNAL_WORKFLOW_TOOLS,
     ];
@@ -466,6 +485,15 @@ Sound good? I'll start building it right away."
 User: "yes!"
 → [Call fable_start_build with structured spec]
 
+## Fixing FABLE Issues
+
+When a user reports a bug or issue with FABLE itself (UI display problems, broken features, incorrect behavior), use \`fable_start_fix\` instead of \`fable_start_build\`.
+
+- **Frontend fixes** (fixType: "frontend"): UI rendering bugs, layout issues, broken interactions, styling problems. Examples: "the percentage shows wrong", "the search doesn't filter correctly", "cards are overlapping on mobile".
+- **Infrastructure fixes** (fixType: "infrastructure"): Lambda errors, build pipeline bugs, deployment issues. Examples: "builds are failing", "the completion notification doesn't show up", "tools aren't loading".
+
+Ask enough to understand the issue (what's happening vs what should happen), then start the fix build. If the user describes a clear bug, don't over-question — fix it.
+
 ## Current Context
 - Conversation has ${context.messages.length} previous messages
 - Active build: ${context.activeBuildId || 'none'}`;
@@ -642,6 +670,19 @@ const INTERNAL_WORKFLOW_TOOLS: BedrockTool[] = [
       required: ['name', 'description', 'schema'],
     },
   },
+  {
+    name: 'fable_start_fix',
+    description: 'Start a fix build for infrastructure or frontend issues. Use this instead of fable_start_build when the user reports a bug or wants changes to existing FABLE infrastructure or UI — not when they want a new tool.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        description: { type: 'string', description: 'Detailed description of what needs to be fixed, including current behavior and expected behavior' },
+        fixType: { type: 'string', enum: ['infrastructure', 'frontend'], description: 'Whether this is a backend/Lambda fix or a frontend/UI fix' },
+        affectedFiles: { type: 'array', items: { type: 'string' }, description: 'Optional: specific files or components that likely need changes' },
+      },
+      required: ['description', 'fixType'],
+    },
+  },
 ];
 
 async function handleInternalTool(
@@ -669,6 +710,8 @@ async function handleInternalTool(
       return handlePauseWorkflow(input, orgId);
     case 'fable_start_build':
       return handleStartBuild(input, orgId, userId, connectionId, conversationId);
+    case 'fable_start_fix':
+      return handleStartFix(input, orgId, userId, connectionId, conversationId);
     default:
       throw new Error(`Unknown internal tool: ${toolName}`);
   }
@@ -1034,6 +1077,78 @@ ${JSON.stringify(schema, null, 2)}`;
     }
 
     return { success: false, error: body.error || 'Failed to start build' };
+  }
+
+  return { success: false, error: 'No response from build kickoff' };
+}
+
+async function handleStartFix(
+  input: Record<string, unknown>,
+  orgId: string,
+  userId: string,
+  connectionId: string,
+  conversationId?: string,
+): Promise<unknown> {
+  const description = input.description as string;
+  const fixType = input.fixType as string;
+  const affectedFiles = input.affectedFiles as string[] | undefined;
+
+  console.log(`Starting ${fixType} fix build`);
+
+  // Build a request string that clearly signals this is a fix, not a tool build
+  let request = `This is a ${fixType} fix request, not a tool build.\n\n${description}`;
+  if (affectedFiles?.length) {
+    request += `\n\nLikely affected files:\n${affectedFiles.map(f => `- ${f}`).join('\n')}`;
+  }
+
+  // Same invocation path as tool builds — calls build-kickoff Lambda
+  const response = await lambdaClient.send(new InvokeCommand({
+    FunctionName: BUILD_KICKOFF_ARN,
+    Payload: JSON.stringify({
+      action: 'start',
+      payload: {
+        request,
+        userId,
+        orgId,
+        conversationId,
+      },
+    }),
+  }));
+
+  if (response.Payload) {
+    const result = JSON.parse(new TextDecoder().decode(response.Payload));
+    const body = JSON.parse(result.body);
+
+    if (body.success) {
+      if (conversationId) {
+        try {
+          await docClient.send(new UpdateCommand({
+            TableName: CONVERSATIONS_TABLE,
+            Key: { PK: `USER#${userId}`, SK: `CONV#${conversationId}` },
+            UpdateExpression: 'SET activeBuildId = :buildId, updatedAt = :now',
+            ExpressionAttributeValues: {
+              ':buildId': body.buildId,
+              ':now': new Date().toISOString(),
+            },
+          }));
+        } catch (err) {
+          console.error('Failed to update conversation with buildId:', err);
+        }
+      }
+
+      await sendToConnection(connectionId, {
+        type: 'build_started',
+        payload: { buildId: body.buildId, fixType },
+      });
+
+      return {
+        success: true,
+        buildId: body.buildId,
+        message: `${fixType === 'frontend' ? 'Frontend' : 'Infrastructure'} fix build started. I'll notify you when it's deployed.`,
+      };
+    }
+
+    return { success: false, error: body.error || 'Failed to start fix build' };
   }
 
   return { success: false, error: 'No response from build kickoff' };

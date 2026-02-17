@@ -101,6 +101,38 @@ export const handler = async (event: EcsTaskStateChangeEvent): Promise<void> => 
   const buildCycle = (buildRecord.buildCycle as number) || 1;
 
   if (buildSucceeded && builderOutput) {
+    // Handle fix builds (no tool deployment needed)
+    const fixType = builderOutput.fixType as string | undefined;
+    if (fixType) {
+      console.log(`Fix build completed (type: ${fixType})`);
+      const fixDescription = (builderOutput.description as string) || 'Fix applied';
+      const filesChanged = (builderOutput.filesChanged as string[]) || [];
+      await updateBuildStatus(buildRecord, 'completed', {
+        statusCode: 200,
+        body: JSON.stringify({
+          success: true,
+          status: 'success',
+          fixType,
+          description: fixDescription,
+          filesChanged,
+        }),
+        fidelity: { requirement: buildRecord.request, buildCycle, fixType },
+        workflows: [],
+      });
+      const fixLabel = fixType === 'frontend' ? 'Frontend' : 'Infrastructure';
+      await notifyUser(userId, {
+        type: 'build_complete',
+        payload: {
+          buildId,
+          status: 'completed',
+          fixType,
+          message: `${fixLabel} fix deployed! ${fixDescription}`,
+          filesChanged,
+        },
+      });
+      return;
+    }
+
     // Deploy the built tools
     try {
       console.log(`Deploying tools (cycle ${buildCycle})...`);
