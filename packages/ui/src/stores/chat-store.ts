@@ -157,12 +157,49 @@ export const useChatStore = defineStore('chat', {
         }
 
         case 'tool_use': {
+          // Attach tool use to the current fable message (or create one)
+          const toolMsg = this.messages.find(m => m.id === msg.payload.messageId)
+            || this.messages[this.messages.length - 1];
+          if (toolMsg?.role === 'fable') {
+            if (!toolMsg.metadata) toolMsg.metadata = {};
+            if (!toolMsg.metadata.toolUses) toolMsg.metadata.toolUses = [];
+            toolMsg.metadata.toolUses.push({
+              toolName: msg.payload.toolName,
+              toolId: msg.payload.toolId,
+            });
+          } else {
+            // No fable message yet — create a placeholder
+            this.messages.push({
+              id: msg.payload.messageId,
+              role: 'fable',
+              content: '',
+              timestamp: new Date().toISOString(),
+              metadata: {
+                toolUses: [{
+                  toolName: msg.payload.toolName,
+                  toolId: msg.payload.toolId,
+                }],
+              },
+            });
+          }
           this.addLog({
             id: crypto.randomUUID(),
             timestamp: new Date().toISOString(),
             level: 'info',
             message: `Using tool: ${msg.payload.toolName}`,
           });
+          break;
+        }
+
+        case 'tool_result': {
+          // Find the matching tool_use and attach result
+          for (const m of this.messages) {
+            const tu = m.metadata?.toolUses?.find(t => t.toolId === msg.payload.toolId);
+            if (tu) {
+              tu.result = msg.payload.result;
+              break;
+            }
+          }
           break;
         }
 

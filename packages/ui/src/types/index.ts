@@ -9,6 +9,12 @@ export interface Action {
 }
 
 // Chat message type
+export interface ToolUse {
+  toolName: string;
+  toolId: string;
+  result?: unknown;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'fable';
@@ -19,6 +25,7 @@ export interface ChatMessage {
     progress?: number;
     checkmarks?: string[];
     actions?: Action[];
+    toolUses?: ToolUse[];
   };
 }
 
@@ -157,8 +164,8 @@ export type WsIncomingMessage =
   | { type: 'build_completed'; payload: { buildId: string; tools: Array<{ toolName: string; functionUrl: string; schema: unknown }> } }
   | { type: 'build_failed'; payload: { buildId: string; error: string } }
   | { type: 'build_needs_help'; payload: { buildId: string; message: string } }
-  | { type: 'tool_use'; payload: { toolName: string; toolId: string } }
-  | { type: 'tool_result'; payload: { toolId: string; result: unknown } }
+  | { type: 'tool_use'; payload: { toolName: string; toolId: string; messageId: string } }
+  | { type: 'tool_result'; payload: { toolId: string; result: unknown; messageId: string } }
   | { type: 'conversations_list'; payload: { conversations: ConversationSummary[] } }
   | { type: 'conversation_loaded'; payload: ConversationFull }
   | { type: 'conversation_deleted'; payload: { conversationId: string } }

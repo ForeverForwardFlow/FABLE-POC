@@ -87,6 +87,10 @@ export const handler: APIGatewayProxyHandler = async (event): Promise<APIGateway
         case 'CHAT':
         case 'CLARIFY':
         case 'BUILD':
+        case 'USE_TOOL':
+        case 'MEMORY':
+          // All intents route to Chat Lambda — it handles tool discovery/invocation,
+          // build requirement gathering (fable_start_build), and general conversation
           await invokeLambda(`fable-${STAGE}-chat`, {
             connectionId,
             message: content,
@@ -96,24 +100,6 @@ export const handler: APIGatewayProxyHandler = async (event): Promise<APIGateway
             intent,
             requestId: message.requestId,
           });
-          break;
-
-        case 'USE_TOOL':
-          // TODO: Invoke tool Lambda
-          await sendToConnection(connectionId, {
-            type: 'chat_chunk',
-            payload: { content: "Tool usage coming soon! Once you build tools, you'll be able to use them here." },
-          });
-          await sendToConnection(connectionId, { type: 'chat_complete', messageId: crypto.randomUUID() });
-          break;
-
-        case 'MEMORY':
-          // TODO: Invoke memory Lambda
-          await sendToConnection(connectionId, {
-            type: 'chat_chunk',
-            payload: { content: "Memory features coming soon! I'll be able to remember your preferences and past interactions." },
-          });
-          await sendToConnection(connectionId, { type: 'chat_complete', messageId: crypto.randomUUID() });
           break;
       }
 
