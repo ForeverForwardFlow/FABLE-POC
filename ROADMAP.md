@@ -323,7 +323,7 @@ Update this section as work progresses:
 |-------|--------|-------|
 | Phase 1: Multitenancy | COMPLETE | All 8 items done. GSI deployed, decay scheduled weekly. |
 | Phase 2: Memory Experience | PARTIALLY DONE | Items 2.1-2.3 done (session_start, proactive recall, auto-save preferences). Items 2.4-2.7 remaining. |
-| Phase 3: Chat UX | PARTIALLY DONE | ToolUseBlock, ChatInput, markdown done |
+| Phase 3: Chat UX | MOSTLY DONE | 3.1-3.8 done (streaming, reconnect, errors, search, settings, builds, thinking, shortcuts). 3.9-3.10 remaining (P2). |
 | Phase 4: Build Pipeline | NOT STARTED | |
 | Phase 5: Vertical Packs | NOT STARTED | Depends on Phase 1-2 |
 | Phase 6: Infrastructure | NOT STARTED | |

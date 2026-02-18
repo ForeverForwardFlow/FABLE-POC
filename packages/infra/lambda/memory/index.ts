@@ -310,6 +310,10 @@ export const handler = async (event: unknown): Promise<{ statusCode: number; bod
         result = await getMemory(db, payload as { id: string });
         break;
 
+      case 'delete':
+        result = await deleteMemory(db, payload as { id: string });
+        break;
+
       case 'boost':
         result = await boostMemory(db, payload as { id: string; amount?: number });
         break;
@@ -509,6 +513,19 @@ async function getMemory(db: Pool, input: { id: string }): Promise<{ statusCode:
       success: true,
       memory: formatMemory(result.rows[0]),
     }),
+  };
+}
+
+async function deleteMemory(db: Pool, input: { id: string }): Promise<{ statusCode: number; body: string }> {
+  const result = await db.query('DELETE FROM memories WHERE id = $1 RETURNING id', [input.id]);
+
+  if (result.rows.length === 0) {
+    return { statusCode: 404, body: JSON.stringify({ error: 'Memory not found' }) };
+  }
+
+  return {
+    statusCode: 200,
+    body: JSON.stringify({ success: true, deleted: input.id }),
   };
 }
 

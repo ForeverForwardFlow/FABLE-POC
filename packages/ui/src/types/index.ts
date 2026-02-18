@@ -161,12 +161,25 @@ export interface BuildRecord {
   userId?: string;
 }
 
+// Memory record (from Aurora via Memory Lambda)
+export interface MemoryRecord {
+  id: string;
+  type: string;
+  content: string;
+  scope: string;
+  importance: number;
+  pinned: boolean;
+  tags: string[];
+  createdAt: string;
+}
+
 // WebSocket message types (outgoing to server)
 export interface WsOutgoingMessage {
-  type: 'message' | 'ping' | 'list_conversations' | 'load_conversation' | 'delete_conversation' | 'list_builds';
+  type: 'message' | 'ping' | 'list_conversations' | 'load_conversation' | 'delete_conversation' | 'list_builds' | 'list_memories' | 'delete_memory';
   payload?: {
     content?: string;
     conversationId?: string;
+    memoryId?: string;
   };
 }
 
@@ -185,5 +198,7 @@ export type WsIncomingMessage =
   | { type: 'conversation_loaded'; payload: ConversationFull }
   | { type: 'conversation_deleted'; payload: { conversationId: string } }
   | { type: 'builds_list'; payload: { builds: BuildRecord[] } }
+  | { type: 'memories_list'; payload: { memories: MemoryRecord[] } }
+  | { type: 'memory_deleted'; payload: { memoryId: string; success: boolean } }
   | { type: 'pong'; timestamp: string }
   | { type: 'error'; message: string };

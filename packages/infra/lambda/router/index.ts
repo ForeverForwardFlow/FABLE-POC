@@ -15,14 +15,27 @@ const bedrockClient = new BedrockRuntimeClient({ region: 'us-west-2' });
 const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE!;
 const CONVERSATIONS_TABLE = process.env.CONVERSATIONS_TABLE!;
 const BUILDS_TABLE = process.env.BUILDS_TABLE!;
+const MEMORY_LAMBDA_ARN = process.env.MEMORY_LAMBDA_ARN || '';
 const WEBSOCKET_ENDPOINT = process.env.WEBSOCKET_ENDPOINT!;
 const STAGE = process.env.STAGE!;
+
+// UUID mapping for anonymous users (Memory Lambda requires UUID format)
+const DEFAULT_ORG_UUID = '00000000-0000-0000-0000-000000000001';
+const DEFAULT_USER_UUID = '00000000-0000-0000-0000-000000000001';
+function toMemoryOrgId(orgId: string): string {
+  return orgId === 'default' ? DEFAULT_ORG_UUID : orgId;
+}
+function toMemoryUserId(userId: string): string {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)
+    ? userId : DEFAULT_USER_UUID;
+}
 
 interface ClientMessage {
   type: string;
   payload?: {
     content?: string;
     conversationId?: string;
+    memoryId?: string;
   };
   requestId?: string;
 }
@@ -158,6 +171,27 @@ export const handler: APIGatewayProxyHandler = async (event): Promise<APIGateway
       }
       await deleteConversation(connection.userId, message.payload.conversationId);
       await sendToConnection(connectionId, { type: 'conversation_deleted', payload: { conversationId: message.payload.conversationId } });
+      return { statusCode: 200, body: 'OK' };
+    }
+
+    // Handle memory management
+    if (message.type === 'list_memories') {
+      const connection = await getConnection(connectionId);
+      if (!connection) {
+        await sendToConnection(connectionId, { type: 'error', message: 'Connection not found' });
+        return { statusCode: 400, body: 'Connection not found' };
+      }
+      const memories = await listUserMemories(connection.userId, connection.orgId || 'default');
+      await sendToConnection(connectionId, { type: 'memories_list', payload: { memories } });
+      return { statusCode: 200, body: 'OK' };
+    }
+
+    if (message.type === 'delete_memory' && message.payload?.memoryId) {
+      const result = await deleteUserMemory(message.payload.memoryId);
+      await sendToConnection(connectionId, {
+        type: 'memory_deleted',
+        payload: { memoryId: message.payload.memoryId, success: result },
+      });
       return { statusCode: 200, body: 'OK' };
     }
 
@@ -395,6 +429,58 @@ async function listBuilds(orgId: string) {
   return (result.Items || [])
     .sort((a, b) => (b.createdAt as string).localeCompare(a.createdAt as string))
     .slice(0, 50);
+}
+
+async function listUserMemories(userId: string, orgId: string) {
+  if (!MEMORY_LAMBDA_ARN) return [];
+  try {
+    const response = await lambdaClient.send(new InvokeCommand({
+      FunctionName: MEMORY_LAMBDA_ARN,
+      Payload: JSON.stringify({
+        action: 'list',
+        payload: {
+          userId: toMemoryUserId(userId),
+          orgId: toMemoryOrgId(orgId),
+          limit: 50,
+        },
+      }),
+    }));
+
+    if (response.Payload) {
+      const result = JSON.parse(new TextDecoder().decode(response.Payload));
+      const body = JSON.parse(result.body);
+      if (body.success && body.memories) {
+        return body.memories;
+      }
+    }
+    return [];
+  } catch (error) {
+    console.error('Error listing memories:', error);
+    return [];
+  }
+}
+
+async function deleteUserMemory(memoryId: string): Promise<boolean> {
+  if (!MEMORY_LAMBDA_ARN) return false;
+  try {
+    const response = await lambdaClient.send(new InvokeCommand({
+      FunctionName: MEMORY_LAMBDA_ARN,
+      Payload: JSON.stringify({
+        action: 'delete',
+        payload: { id: memoryId },
+      }),
+    }));
+
+    if (response.Payload) {
+      const result = JSON.parse(new TextDecoder().decode(response.Payload));
+      const body = JSON.parse(result.body);
+      return body.success === true;
+    }
+    return false;
+  } catch (error) {
+    console.error('Error deleting memory:', error);
+    return false;
+  }
 }
 
 async function sendToConnection(connectionId: string, message: unknown): Promise<void> {

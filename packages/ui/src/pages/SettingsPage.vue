@@ -143,10 +143,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue';
+import { ref, reactive, onMounted, onUnmounted, watch } from 'vue';
 import { useQuasar } from 'quasar';
 import { useAuthStore } from 'src/stores/auth-store';
 import { fableWs } from 'src/boot/websocket';
+import type { WsIncomingMessage, MemoryRecord } from 'src/types';
 
 const $q = useQuasar();
 const authStore = useAuthStore();
@@ -157,18 +158,12 @@ const MCP_API = import.meta.env.VITE_MCP_API_URL || 'https://25d5630rjb.execute-
 const toolCount = ref(0);
 
 // Memories
-interface Memory {
-  id: string;
-  type: string;
-  content: string;
-  createdAt: string;
-  importance?: number;
-  tags?: string[];
-}
-
-const memories = ref<Memory[]>([]);
+const memories = ref<MemoryRecord[]>([]);
 const memoriesLoading = ref(false);
 const deletingIds = reactive(new Set<string>());
+
+let unsubscribe: (() => void) | null = null;
+let unwatchConnected: (() => void) | null = null;
 
 function memoryIcon(type: string): string {
   const icons: Record<string, string> = {
@@ -214,61 +209,55 @@ async function loadToolCount() {
   }
 }
 
-async function loadMemories() {
+function loadMemories() {
   memoriesLoading.value = true;
-  try {
-    // Use MCP API to search for user's preference memories
-    const res = await fetch(`${MCP_API}/tools/call`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        toolName: 'memory-search',
-        arguments: {
-          query: 'user preferences and settings',
-          types: ['preference', 'insight', 'gotcha'],
-          limit: 50,
-        },
-      }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      // Memory search returns results array
-      if (data.content?.[0]?.text) {
-        const parsed = JSON.parse(data.content[0].text);
-        memories.value = parsed.memories || parsed.results || [];
-      }
-    }
-  } catch {
-    // Memory API may not be exposed via MCP — show empty state
-  } finally {
-    memoriesLoading.value = false;
-  }
+  fableWs.send({ type: 'list_memories' });
 }
 
-async function deleteMemory(id: string) {
+function deleteMemory(id: string) {
   deletingIds.add(id);
-  try {
-    // Attempt to delete via MCP API
-    await fetch(`${MCP_API}/tools/call`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        toolName: 'memory-delete',
-        arguments: { id },
-      }),
-    });
-    memories.value = memories.value.filter(m => m.id !== id);
-    $q.notify({ type: 'positive', message: 'Memory deleted' });
-  } catch {
-    $q.notify({ type: 'negative', message: 'Failed to delete memory' });
-  } finally {
-    deletingIds.delete(id);
-  }
+  fableWs.send({ type: 'delete_memory', payload: { memoryId: id } });
+}
+
+function initAfterConnect() {
+  loadMemories();
+  loadToolCount();
 }
 
 onMounted(() => {
-  loadToolCount();
-  loadMemories();
+  unsubscribe = fableWs.onMessage((msg: WsIncomingMessage) => {
+    if (msg.type === 'memories_list') {
+      memories.value = msg.payload.memories;
+      memoriesLoading.value = false;
+    }
+    if (msg.type === 'memory_deleted') {
+      deletingIds.delete(msg.payload.memoryId);
+      if (msg.payload.success) {
+        memories.value = memories.value.filter(m => m.id !== msg.payload.memoryId);
+        $q.notify({ type: 'positive', message: 'Memory deleted' });
+      } else {
+        $q.notify({ type: 'negative', message: 'Failed to delete memory' });
+      }
+    }
+  });
+
+  if (fableWs.connected.value) {
+    initAfterConnect();
+  } else {
+    loadToolCount(); // This doesn't need WS
+    unwatchConnected = watch(fableWs.connected, (isConnected) => {
+      if (isConnected) {
+        loadMemories();
+        unwatchConnected?.();
+        unwatchConnected = null;
+      }
+    });
+  }
+});
+
+onUnmounted(() => {
+  unsubscribe?.();
+  unwatchConnected?.();
 });
 </script>
 

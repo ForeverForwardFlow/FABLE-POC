@@ -597,9 +597,11 @@ export class FableStack extends cdk.Stack {
       resources: ['*'],
     }));
 
-    // Grant Chat Lambda permission to invoke Memory Lambda
+    // Grant Chat Lambda and Router Lambda permission to invoke Memory Lambda
     memoryFn.grantInvoke(chatFn);
     chatFn.addEnvironment('MEMORY_LAMBDA_ARN', memoryFn.functionArn);
+    memoryFn.grantInvoke(routerFn);
+    routerFn.addEnvironment('MEMORY_LAMBDA_ARN', memoryFn.functionArn);
 
     // Memory Lambda Function URL (for MCP access from ECS containers)
     const memoryFnUrl = memoryFn.addFunctionUrl({
