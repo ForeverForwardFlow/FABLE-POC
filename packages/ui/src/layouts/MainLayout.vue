@@ -7,6 +7,15 @@
         <q-toolbar-title class="text-weight-bold text-purple">
           FABLE
         </q-toolbar-title>
+        <transition name="fade">
+          <div v-if="fableWs.connectionState.value !== 'connected'" class="connection-status">
+            <q-spinner-dots v-if="fableWs.connectionState.value === 'reconnecting'" size="14px" color="amber" />
+            <q-icon v-else name="cloud_off" size="14px" color="negative" />
+            <span class="connection-status__text">
+              {{ fableWs.connectionState.value === 'reconnecting' ? 'Reconnecting...' : 'Disconnected' }}
+            </span>
+          </div>
+        </transition>
         <q-btn flat dense round icon="settings" />
         <template v-if="authStore.isAuthenticated">
           <q-btn flat dense no-caps class="q-ml-sm">
@@ -122,6 +131,7 @@ import { useUIStore } from 'src/stores/ui-store';
 import { useChatStore } from 'src/stores/chat-store';
 import { useConversationsStore } from 'src/stores/conversations-store';
 import { useAuthStore } from 'src/stores/auth-store';
+import { fableWs } from 'src/boot/websocket';
 
 const router = useRouter();
 const uiStore = useUIStore();
@@ -182,6 +192,30 @@ function formatTime(isoString: string): string {
 <style lang="scss" scoped>
 .text-purple {
   color: var(--ff-purple);
+}
+
+.connection-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  margin-right: 8px;
+  font-size: 12px;
+
+  &__text {
+    color: var(--ff-text-secondary);
+  }
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 
 .sidebar-nav {

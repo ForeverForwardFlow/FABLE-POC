@@ -1,18 +1,35 @@
 import { boot } from 'quasar/wrappers';
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import type { WsIncomingMessage } from '../types';
 import { useAuthStore } from 'src/stores/auth-store';
 
 // WebSocket endpoint — configurable via env or defaults to deployed endpoint
 const WS_URL = import.meta.env.VITE_WS_URL || 'wss://f9qynczzkj.execute-api.us-west-2.amazonaws.com/dev';
 
-const connected = ref(false);
+// Connection state: 'connected' | 'connecting' | 'disconnected' | 'reconnecting'
+const connectionState = ref<'connected' | 'connecting' | 'disconnected' | 'reconnecting'>('disconnected');
+const connected = computed(() => connectionState.value === 'connected');
+
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectAttempt = 0;
 const messageHandlers: Array<(msg: WsIncomingMessage) => void> = [];
+
+// Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s (capped)
+const BASE_DELAY = 1000;
+const MAX_DELAY = 30000;
+
+function getReconnectDelay(): number {
+  const exponential = Math.min(BASE_DELAY * Math.pow(2, reconnectAttempt), MAX_DELAY);
+  // Add jitter: 0-50% of the delay
+  const jitter = Math.random() * exponential * 0.5;
+  return exponential + jitter;
+}
 
 function connect() {
   if (ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING) return;
+
+  connectionState.value = reconnectAttempt > 0 ? 'reconnecting' : 'connecting';
 
   // Append ID token as query param if authenticated
   let url = WS_URL;
@@ -25,12 +42,13 @@ function connect() {
     // Auth store may not be initialized yet during boot
   }
 
-  console.log('[FABLE] Connecting to', WS_URL);
+  console.log(`[FABLE] ${reconnectAttempt > 0 ? 'Reconnecting' : 'Connecting'} to WebSocket (attempt ${reconnectAttempt + 1})`);
   ws = new WebSocket(url);
 
   ws.onopen = () => {
     console.log('[FABLE] WebSocket connected');
-    connected.value = true;
+    connectionState.value = 'connected';
+    reconnectAttempt = 0;
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -50,7 +68,7 @@ function connect() {
 
   ws.onclose = () => {
     console.log('[FABLE] WebSocket disconnected');
-    connected.value = false;
+    connectionState.value = 'disconnected';
     ws = null;
     scheduleReconnect();
   };
@@ -65,9 +83,10 @@ function disconnect() {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  reconnectAttempt = 0;
   ws?.close();
   ws = null;
-  connected.value = false;
+  connectionState.value = 'disconnected';
 }
 
 function send(data: unknown) {
@@ -88,15 +107,19 @@ function onMessage(handler: (msg: WsIncomingMessage) => void) {
 
 function scheduleReconnect() {
   if (reconnectTimer) return;
+  const delay = getReconnectDelay();
+  console.log(`[FABLE] Reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempt + 1})`);
+  connectionState.value = 'reconnecting';
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
-    console.log('[FABLE] Reconnecting...');
+    reconnectAttempt++;
     connect();
-  }, 3000);
+  }, delay);
 }
 
 export const fableWs = {
   connected,
+  connectionState,
   connect,
   disconnect,
   send,
