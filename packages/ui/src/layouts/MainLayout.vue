@@ -16,7 +16,7 @@
             </span>
           </div>
         </transition>
-        <q-btn flat dense round icon="settings" />
+        <q-btn flat dense round icon="settings" :to="{ name: 'settings' }" />
         <template v-if="authStore.isAuthenticated">
           <q-btn flat dense no-caps class="q-ml-sm">
             <q-avatar size="28px" color="purple" text-color="white" class="q-mr-xs">
@@ -182,6 +182,8 @@ const navItems = [
   { name: 'chat', label: 'Chat', icon: 'chat' },
   { name: 'tools', label: 'Tools', icon: 'build' },
   { name: 'workflows', label: 'Workflows', icon: 'schedule' },
+  { name: 'builds', label: 'Builds', icon: 'construction' },
+  { name: 'settings', label: 'Settings', icon: 'settings' },
 ];
 
 function startNewConversation() {

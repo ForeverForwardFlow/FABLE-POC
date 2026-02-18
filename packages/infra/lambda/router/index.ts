@@ -14,6 +14,7 @@ const bedrockClient = new BedrockRuntimeClient({ region: 'us-west-2' });
 
 const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE!;
 const CONVERSATIONS_TABLE = process.env.CONVERSATIONS_TABLE!;
+const BUILDS_TABLE = process.env.BUILDS_TABLE!;
 const WEBSOCKET_ENDPOINT = process.env.WEBSOCKET_ENDPOINT!;
 const STAGE = process.env.STAGE!;
 
@@ -157,6 +158,18 @@ export const handler: APIGatewayProxyHandler = async (event): Promise<APIGateway
       }
       await deleteConversation(connection.userId, message.payload.conversationId);
       await sendToConnection(connectionId, { type: 'conversation_deleted', payload: { conversationId: message.payload.conversationId } });
+      return { statusCode: 200, body: 'OK' };
+    }
+
+    // Handle build history
+    if (message.type === 'list_builds') {
+      const connection = await getConnection(connectionId);
+      if (!connection) {
+        await sendToConnection(connectionId, { type: 'error', message: 'Connection not found' });
+        return { statusCode: 400, body: 'Connection not found' };
+      }
+      const builds = await listBuilds(connection.orgId || 'default');
+      await sendToConnection(connectionId, { type: 'builds_list', payload: { builds } });
       return { statusCode: 200, body: 'OK' };
     }
 
@@ -364,6 +377,24 @@ async function deleteConversation(userId: string, conversationId: string) {
     TableName: CONVERSATIONS_TABLE,
     Key: { PK: `USER#${userId}`, SK: `CONV#${conversationId}` },
   }));
+}
+
+async function listBuilds(orgId: string) {
+  const result = await docClient.send(new QueryCommand({
+    TableName: BUILDS_TABLE,
+    KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+    ExpressionAttributeValues: {
+      ':pk': `ORG#${orgId}`,
+      ':sk': 'BUILD#',
+    },
+    ProjectionExpression: 'buildId, #s, request, createdAt, updatedAt, completedAt, buildCycle, userId',
+    ExpressionAttributeNames: { '#s': 'status' },
+    ScanIndexForward: false,
+  }));
+
+  return (result.Items || [])
+    .sort((a, b) => (b.createdAt as string).localeCompare(a.createdAt as string))
+    .slice(0, 50);
 }
 
 async function sendToConnection(connectionId: string, message: unknown): Promise<void> {

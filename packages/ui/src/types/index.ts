@@ -149,9 +149,21 @@ export interface ConversationFull {
   updatedAt: string;
 }
 
+// Build record (from DynamoDB)
+export interface BuildRecord {
+  buildId: string;
+  status: 'pending' | 'retrying' | 'completed' | 'failed' | 'needs_help';
+  request: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  buildCycle?: number;
+  userId?: string;
+}
+
 // WebSocket message types (outgoing to server)
 export interface WsOutgoingMessage {
-  type: 'message' | 'ping' | 'list_conversations' | 'load_conversation' | 'delete_conversation';
+  type: 'message' | 'ping' | 'list_conversations' | 'load_conversation' | 'delete_conversation' | 'list_builds';
   payload?: {
     content?: string;
     conversationId?: string;
@@ -172,5 +184,6 @@ export type WsIncomingMessage =
   | { type: 'conversations_list'; payload: { conversations: ConversationSummary[] } }
   | { type: 'conversation_loaded'; payload: ConversationFull }
   | { type: 'conversation_deleted'; payload: { conversationId: string } }
+  | { type: 'builds_list'; payload: { builds: BuildRecord[] } }
   | { type: 'pong'; timestamp: string }
   | { type: 'error'; message: string };
