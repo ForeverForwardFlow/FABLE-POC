@@ -28,6 +28,10 @@ const GATEWAY_NAME = 'fable-tools-gateway';
 const GATEWAY_VERSION = '1.0.0';
 const DEFAULT_ORG = 'default';
 
+// In-memory cache for tool listings (avoids DynamoDB query on every browser load)
+const TOOLS_CACHE_TTL_MS = 60_000; // 60 seconds
+const toolsCache = new Map<string, { tools: unknown[]; cachedAt: number }>();
+
 interface McpRequest {
   jsonrpc: '2.0';
   method: string;
@@ -313,6 +317,13 @@ async function handleToolsList(orgId: string, id?: string | number): Promise<Mcp
   console.log(`Discovering tools for org: ${orgId}`);
 
   try {
+    // Check in-memory cache first
+    const cached = toolsCache.get(orgId);
+    if (cached && (Date.now() - cached.cachedAt) < TOOLS_CACHE_TTL_MS) {
+      console.log(`Serving ${cached.tools.length} tools from cache for org ${orgId}`);
+      return { jsonrpc: '2.0', id, result: { tools: cached.tools } };
+    }
+
     // Query tools scoped to this org's partition
     const result = await docClient.send(new QueryCommand({
       TableName: TOOLS_TABLE,
@@ -337,6 +348,9 @@ async function handleToolsList(orgId: string, id?: string | number): Promise<Mcp
     });
 
     console.log(`Found ${tools.length} tools for org ${orgId}`);
+
+    // Update cache
+    toolsCache.set(orgId, { tools, cachedAt: Date.now() });
 
     return {
       jsonrpc: '2.0',
@@ -476,6 +490,9 @@ async function handleToolDelete(name: string, orgId: string): Promise<void> {
     }));
     console.log(`Deleted DynamoDB record: ${item.PK}/${item.SK}`);
   }
+
+  // Invalidate tools cache for this org
+  toolsCache.delete(orgId);
 }
 
 // ============================================================
