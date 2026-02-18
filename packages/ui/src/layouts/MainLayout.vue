@@ -79,9 +79,23 @@
           />
         </div>
 
-        <q-list v-if="conversationsStore.conversations.length" dense class="conversation-list">
+        <q-input
+          v-if="conversationsStore.conversations.length > 3"
+          v-model="conversationSearch"
+          dense outlined
+          placeholder="Search..."
+          class="conversations-section__search"
+          clearable
+          dark
+        >
+          <template #prepend>
+            <q-icon name="search" size="16px" />
+          </template>
+        </q-input>
+
+        <q-list v-if="filteredConversations.length" dense class="conversation-list">
           <q-item
-            v-for="conv in conversationsStore.conversations"
+            v-for="conv in filteredConversations"
             :key="conv.conversationId"
             clickable
             v-ripple
@@ -111,6 +125,9 @@
           </q-item>
         </q-list>
 
+        <div v-else-if="conversationSearch && conversationsStore.conversations.length" class="conversations-section__empty">
+          No matches
+        </div>
         <div v-else-if="!conversationsStore.loading" class="conversations-section__empty">
           No conversations yet
         </div>
@@ -127,7 +144,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useUIStore } from 'src/stores/ui-store';
 import { useChatStore } from 'src/stores/chat-store';
@@ -149,6 +166,16 @@ const sidebarOpen = computed({
       uiStore.toggleSidebar();
     }
   }
+});
+
+const conversationSearch = ref('');
+
+const filteredConversations = computed(() => {
+  const query = (conversationSearch.value || '').toLowerCase().trim();
+  if (!query) return conversationsStore.conversations;
+  return conversationsStore.conversations.filter(
+    c => (c.title || '').toLowerCase().includes(query)
+  );
 });
 
 const navItems = [
@@ -256,6 +283,17 @@ function formatTime(isoString: string): string {
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--ff-text-secondary);
+  }
+
+  &__search {
+    padding: 0 8px 8px;
+
+    :deep(.q-field__control) {
+      height: 32px;
+    }
+    :deep(.q-field__marginal) {
+      height: 32px;
+    }
   }
 
   &__empty {
