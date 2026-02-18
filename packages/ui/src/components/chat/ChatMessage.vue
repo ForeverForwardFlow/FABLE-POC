@@ -11,12 +11,16 @@
           :tool-use="tu"
         />
       </div>
+      <ThinkingBlock
+        v-if="message.metadata?.isStreaming && !message.content"
+        :label="thinkingLabel"
+      />
       <div
         v-if="message.role === 'fable'"
         class="chat-message__content markdown-body"
       >
         <span v-html="renderedContent" />
-        <span v-if="message.metadata?.isStreaming" class="streaming-cursor">▌</span>
+        <span v-if="message.metadata?.isStreaming && message.content" class="streaming-cursor">▌</span>
       </div>
       <div v-else class="chat-message__content">{{ message.content }}</div>
 
@@ -63,6 +67,7 @@ import ProgressBar from './ProgressBar.vue';
 import PhaseBadge from './PhaseBadge.vue';
 import ActionButton from './ActionButton.vue';
 import ToolUseBlock from './ToolUseBlock.vue';
+import ThinkingBlock from './ThinkingBlock.vue';
 
 // Configure marked for safe, compact output
 marked.setOptions({ breaks: true, gfm: true });
@@ -70,6 +75,11 @@ marked.setOptions({ breaks: true, gfm: true });
 const props = defineProps<{
   message: ChatMessage;
 }>();
+
+const thinkingLabel = computed(() => {
+  if (props.message.metadata?.toolUses?.length) return 'Using tools...';
+  return 'Thinking...';
+});
 
 defineEmits<{
   (e: 'action', action: Action): void;

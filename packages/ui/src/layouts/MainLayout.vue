@@ -152,6 +152,9 @@ import { useConversationsStore } from 'src/stores/conversations-store';
 import { useAuthStore } from 'src/stores/auth-store';
 import { fableWs } from 'src/boot/websocket';
 import ErrorBoundary from 'src/components/ErrorBoundary.vue';
+import { useKeyboardShortcuts } from 'src/composables/useKeyboardShortcuts';
+
+useKeyboardShortcuts();
 
 const router = useRouter();
 const uiStore = useUIStore();
