@@ -24,6 +24,19 @@ const BUILD_KICKOFF_ARN = process.env.BUILD_KICKOFF_ARN!;
 const SCHEDULER_ROLE_ARN = process.env.SCHEDULER_ROLE_ARN!;
 const STAGE = process.env.STAGE!;
 
+// Map default/anonymous identifiers to UUIDs for Aurora's UUID columns
+const DEFAULT_ORG_UUID = '00000000-0000-0000-0000-000000000001';
+const DEFAULT_USER_UUID = '00000000-0000-0000-0000-000000000001';
+function toMemoryOrgId(orgId: string): string {
+  return orgId === 'default' ? DEFAULT_ORG_UUID : orgId;
+}
+function toMemoryUserId(userId: string): string {
+  // Check if it's already a UUID format
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)
+    ? userId
+    : DEFAULT_USER_UUID;
+}
+
 interface ChatEvent {
   connectionId: string;
   message: string;
@@ -98,16 +111,17 @@ export const handler = async (event: ChatEvent): Promise<void> => {
   const messageId = crypto.randomUUID();
 
   try {
-    // Query relevant memories and available tools in parallel
-    const [memories, tools] = await Promise.all([
+    // Query relevant memories, user preferences, and available tools in parallel
+    const [memories, preferences, tools] = await Promise.all([
       queryMemories(message, userId, orgId),
+      loadUserPreferences(userId, orgId),
       discoverTools(orgId),
     ]);
 
-    console.log(`Found ${tools.length} tools for org ${orgId}`);
+    console.log(`Found ${tools.length} tools for org ${orgId}, ${preferences.length} user preferences`);
 
     // Build system prompt
-    const systemPrompt = buildSystemPrompt(memories, context, intent, tools);
+    const systemPrompt = buildSystemPrompt(memories, preferences, context, intent, tools);
 
     // Convert tools to Bedrock format (external + internal workflow tools)
     // Sanitize schemas — Bedrock doesn't support oneOf/allOf/anyOf
@@ -295,8 +309,8 @@ async function queryMemories(query: string, userId: string, orgId: string): Prom
         action: 'search',
         payload: {
           query,
-          userId,
-          orgId,
+          userId: toMemoryUserId(userId),
+          orgId: toMemoryOrgId(orgId),
           scopes: ['user', 'org', 'global'],
           limit: 5,
         },
@@ -329,6 +343,40 @@ async function queryMemories(query: string, userId: string, orgId: string): Prom
   } catch (error) {
     console.error('Error querying memories:', error);
     // Don't fail the chat if memory lookup fails
+    return [];
+  }
+}
+
+async function loadUserPreferences(userId: string, orgId: string): Promise<string[]> {
+  try {
+    const response = await lambdaClient.send(new InvokeCommand({
+      FunctionName: MEMORY_LAMBDA_ARN,
+      Payload: JSON.stringify({
+        action: 'search',
+        payload: {
+          query: 'user preferences style workflow history',
+          userId: toMemoryUserId(userId),
+          orgId: toMemoryOrgId(orgId),
+          scopes: ['user', 'org', 'global'],
+          limit: 8,
+        },
+      }),
+    }));
+
+    if (response.Payload) {
+      const result = JSON.parse(new TextDecoder().decode(response.Payload));
+      const body = JSON.parse(result.body);
+
+      if (body.success && body.memories) {
+        return body.memories
+          .filter((m: MemoryResult) => m.type === 'preference' && m.similarity >= 0.3)
+          .map((m: MemoryResult) => m.content);
+      }
+    }
+
+    return [];
+  } catch (error) {
+    console.error('Error loading user preferences:', error);
     return [];
   }
 }
@@ -390,6 +438,7 @@ async function invokeToolFunction(tool: FableTool, input: Record<string, unknown
 
 function buildSystemPrompt(
   memories: string[],
+  preferences: string[],
   context: ChatEvent['context'],
   intent: ChatEvent['intent'],
   tools: FableTool[] = []
@@ -465,6 +514,21 @@ Ask enough to understand the issue (what's happening vs what should happen), the
 ## Current Context
 - Conversation has ${context.messages.length} previous messages
 - Active build: ${context.activeBuildId || 'none'}`;
+
+  if (preferences.length > 0) {
+    prompt += `
+
+## What I Know About This User
+These are preferences and patterns I've learned from previous conversations. Reference them naturally — don't list them, just let them inform your tone and suggestions:
+${preferences.map(p => `- ${p}`).join('\n')}
+
+When you notice a new preference (e.g., "I prefer simple UIs", "always use metric units", "I like detailed explanations"), use the fable_remember_preference tool to save it for future conversations.`;
+  } else {
+    prompt += `
+
+## Getting to Know This User
+This is a new or returning user whose preferences I haven't learned yet. As you chat, listen for stated preferences (e.g., "I like simple tools", "keep it technical") and use the fable_remember_preference tool to save them for future conversations.`;
+  }
 
   if (tools.length > 0) {
     prompt += `
@@ -641,6 +705,18 @@ const INTERNAL_WORKFLOW_TOOLS: BedrockTool[] = [
     },
   },
   {
+    name: 'fable_remember_preference',
+    description: 'Save a user preference or pattern for future conversations. Use this when the user explicitly states a preference (e.g., "I prefer simple UIs", "always use metric units") or when you notice a consistent pattern in their requests. Do NOT call this for one-off task instructions — only for durable preferences.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'The preference to remember (e.g., "User prefers detailed technical explanations", "User likes tools with example buttons")' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Tags for categorization (e.g., ["ui", "style"], ["communication"])' },
+      },
+      required: ['content'],
+    },
+  },
+  {
     name: 'fable_start_fix',
     description: 'Start a fix build for infrastructure or frontend issues. Use this instead of fable_start_build when the user reports a bug or wants changes to existing FABLE infrastructure or UI — not when they want a new tool.',
     input_schema: {
@@ -678,6 +754,8 @@ async function handleInternalTool(
       return handleRunWorkflow(input, orgId, userId, connectionId);
     case 'fable_pause_workflow':
       return handlePauseWorkflow(input, orgId);
+    case 'fable_remember_preference':
+      return handleRememberPreference(input, orgId, userId);
     case 'fable_start_build':
       return handleStartBuild(input, orgId, userId, connectionId, conversationId);
     case 'fable_start_fix':
@@ -974,6 +1052,48 @@ async function handleRunWorkflow(
     message: `Workflow "${existing.Item.name}" is now running. You'll be notified when it completes.`,
     workflowId,
   };
+}
+
+async function handleRememberPreference(
+  input: Record<string, unknown>,
+  orgId: string,
+  userId: string,
+): Promise<unknown> {
+  const content = input.content as string;
+  const tags = (input.tags as string[]) || ['preference'];
+
+  try {
+    const response = await lambdaClient.send(new InvokeCommand({
+      FunctionName: MEMORY_LAMBDA_ARN,
+      Payload: JSON.stringify({
+        action: 'create',
+        payload: {
+          type: 'preference',
+          content,
+          scope: 'user',
+          source: 'user_stated',
+          importance: 0.8,
+          tags,
+          userId: toMemoryUserId(userId),
+          orgId: toMemoryOrgId(orgId),
+        },
+      }),
+    }));
+
+    if (response.Payload) {
+      const result = JSON.parse(new TextDecoder().decode(response.Payload));
+      const body = JSON.parse(result.body);
+
+      if (body.success) {
+        return { success: true, message: `I'll remember that: "${content}"` };
+      }
+    }
+
+    return { success: false, error: 'Failed to save preference' };
+  } catch (error) {
+    console.error('Error saving preference:', error);
+    return { success: false, error: 'Failed to save preference' };
+  }
 }
 
 async function handleStartBuild(
