@@ -402,6 +402,7 @@ export class FableStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
       memorySize: 512,
       logRetention: logs.RetentionDays.ONE_WEEK,
+      tracing: lambda.Tracing.ACTIVE,
       bundling: bundlingOptions,
     });
 
@@ -419,6 +420,7 @@ export class FableStack extends cdk.Stack {
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       securityGroups: [lambdaSecurityGroup],
       logRetention: logs.RetentionDays.ONE_WEEK,
+      tracing: lambda.Tracing.ACTIVE,
       bundling: {
         minify: true,
         sourceMap: true,
@@ -667,6 +669,7 @@ export class FableStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(60),
       memorySize: 256,
       logRetention: logs.RetentionDays.ONE_WEEK,
+      tracing: lambda.Tracing.ACTIVE,
       bundling: {
         minify: true,
         sourceMap: true,
@@ -736,6 +739,7 @@ export class FableStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
       logRetention: logs.RetentionDays.ONE_WEEK,
+      tracing: lambda.Tracing.ACTIVE,
       bundling: bundlingOptions,
     });
 
@@ -1184,6 +1188,7 @@ export class FableStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
       logRetention: logs.RetentionDays.ONE_WEEK,
+      tracing: lambda.Tracing.ACTIVE,
       bundling: bundlingOptions,
     });
 
@@ -1220,6 +1225,7 @@ export class FableStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(120),
       memorySize: 512,
       logRetention: logs.RetentionDays.ONE_WEEK,
+      tracing: lambda.Tracing.ACTIVE,
       bundling: {
         minify: true,
         sourceMap: true,
