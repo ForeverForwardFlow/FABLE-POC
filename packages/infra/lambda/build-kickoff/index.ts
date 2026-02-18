@@ -162,6 +162,12 @@ async function startBuild(request: BuildRequest): Promise<{ statusCode: number; 
     },
     startedBy: `fable-build:${buildId}`,
     count: 1,
+    tags: [
+      { key: 'fable:org', value: orgId },
+      { key: 'fable:user', value: userId },
+      { key: 'fable:build', value: buildId },
+      { key: 'fable:stage', value: STAGE },
+    ],
   }));
 
   const taskArn = taskResult.tasks?.[0]?.taskArn;

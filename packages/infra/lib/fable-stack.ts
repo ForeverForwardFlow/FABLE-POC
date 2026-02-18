@@ -1210,10 +1210,10 @@ export class FableStack extends cdk.Stack {
     buildKickoffFn.grantInvoke(chatFn); // Chat triggers builds after requirement gathering
     chatFn.addEnvironment('BUILD_KICKOFF_ARN', buildKickoffFn.functionArn);
 
-    // ECS RunTask permission for build-kickoff
+    // ECS RunTask permission for build-kickoff (including cost attribution tags)
     buildKickoffFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ecs:RunTask'],
-      resources: [buildTaskDefinition.taskDefinitionArn],
+      actions: ['ecs:RunTask', 'ecs:TagResource'],
+      resources: [buildTaskDefinition.taskDefinitionArn, `arn:aws:ecs:${this.region}:${this.account}:task/fable-${stage}-builds/*`],
     }));
     // PassRole for task role + execution role (required by ECS RunTask)
     buildKickoffFn.addToRolePolicy(new iam.PolicyStatement({
