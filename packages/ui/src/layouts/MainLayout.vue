@@ -119,7 +119,9 @@
 
     <!-- Main Content -->
     <q-page-container>
-      <router-view />
+      <ErrorBoundary>
+        <router-view />
+      </ErrorBoundary>
     </q-page-container>
   </q-layout>
 </template>
@@ -132,6 +134,7 @@ import { useChatStore } from 'src/stores/chat-store';
 import { useConversationsStore } from 'src/stores/conversations-store';
 import { useAuthStore } from 'src/stores/auth-store';
 import { fableWs } from 'src/boot/websocket';
+import ErrorBoundary from 'src/components/ErrorBoundary.vue';
 
 const router = useRouter();
 const uiStore = useUIStore();

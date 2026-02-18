@@ -1,7 +1,7 @@
 import { configure } from 'quasar/wrappers';
 
 export default configure(() => ({
-  boot: ['auth', 'websocket'],
+  boot: ['error-handler', 'auth', 'websocket'],
   css: ['app.scss'],
   extras: ['roboto-font', 'material-icons'],
   build: {
