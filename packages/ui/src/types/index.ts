@@ -27,6 +27,7 @@ export interface ChatMessage {
     checkmarks?: string[];
     actions?: Action[];
     toolUses?: ToolUse[];
+    isStreaming?: boolean;
   };
 }
 
@@ -159,6 +160,7 @@ export interface WsOutgoingMessage {
 
 // WebSocket message types (incoming from server)
 export type WsIncomingMessage =
+  | { type: 'chat_chunk'; payload: { messageId: string; content: string } }
   | { type: 'chat_response'; payload: { messageId: string; content: string } }
   | { type: 'chat_complete'; payload: { messageId: string; fullContent: string; conversationId: string } }
   | { type: 'build_started'; payload: { buildId: string; toolName: string } }

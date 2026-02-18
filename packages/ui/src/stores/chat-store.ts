@@ -5,12 +5,14 @@ import type { ChatMessage, ChatState, LogEntry, WsIncomingMessage } from '../typ
 const CONV_ID_KEY = 'fable_conversationId';
 
 export const useChatStore = defineStore('chat', {
-  state: (): ChatState => ({
+  state: (): ChatState & { isStreaming: boolean; streamTick: number } => ({
     messages: [],
     isBuilding: false,
     currentBuildId: null,
     conversationId: localStorage.getItem(CONV_ID_KEY),
-    logs: []
+    logs: [],
+    isStreaming: false,
+    streamTick: 0,
   }),
 
   getters: {
@@ -37,6 +39,16 @@ export const useChatStore = defineStore('chat', {
       };
       this.messages.push(message);
 
+      // Add thinking placeholder so user sees immediate feedback
+      this.isStreaming = true;
+      this.messages.push({
+        id: 'pending-response',
+        role: 'fable',
+        content: '',
+        timestamp: new Date().toISOString(),
+        metadata: { isStreaming: true },
+      });
+
       // Send via WebSocket
       fableWs.send({
         type: 'message',
@@ -49,8 +61,36 @@ export const useChatStore = defineStore('chat', {
 
     handleWsMessage(msg: WsIncomingMessage): void {
       switch (msg.type) {
+        case 'chat_chunk': {
+          // Streaming chunk — append to existing message or replace placeholder
+          this.isStreaming = true;
+          const last = this.messages[this.messages.length - 1];
+          if (last?.role === 'fable' && last.id === msg.payload.messageId) {
+            // Same message — append
+            last.content += msg.payload.content;
+            if (!last.metadata) last.metadata = {};
+            last.metadata.isStreaming = true;
+          } else if (last?.role === 'fable' && last.id === 'pending-response') {
+            // Replace thinking placeholder with real message
+            last.id = msg.payload.messageId;
+            last.content = msg.payload.content;
+            if (!last.metadata) last.metadata = {};
+            last.metadata.isStreaming = true;
+          } else {
+            this.messages.push({
+              id: msg.payload.messageId,
+              role: 'fable',
+              content: msg.payload.content,
+              timestamp: new Date().toISOString(),
+              metadata: { isStreaming: true },
+            });
+          }
+          this.streamTick++;
+          break;
+        }
+
         case 'chat_response': {
-          // Streaming response — update or create FABLE message
+          // Legacy: treat same as chat_chunk for backward compat
           const last = this.messages[this.messages.length - 1];
           if (last?.role === 'fable' && last.id === msg.payload.messageId) {
             last.content = msg.payload.content;
@@ -66,10 +106,18 @@ export const useChatStore = defineStore('chat', {
         }
 
         case 'chat_complete': {
-          // Final message — update content and capture conversationId
-          const last = this.messages[this.messages.length - 1];
-          if (last?.role === 'fable' && last.id === msg.payload.messageId) {
+          // Final message — update content, clear streaming, capture conversationId
+          this.isStreaming = false;
+          // Find matching message or pending placeholder
+          let last = this.messages.find(m => m.id === msg.payload.messageId);
+          if (!last) {
+            last = this.messages.find(m => m.id === 'pending-response');
+            if (last) last.id = msg.payload.messageId;
+          }
+          if (!last) last = this.messages[this.messages.length - 1];
+          if (last?.role === 'fable') {
             last.content = msg.payload.fullContent;
+            if (last.metadata) last.metadata.isStreaming = false;
           } else {
             this.messages.push({
               id: msg.payload.messageId,
@@ -157,6 +205,11 @@ export const useChatStore = defineStore('chat', {
         }
 
         case 'tool_use': {
+          // Replace pending placeholder if present
+          const pendingIdx = this.messages.findIndex(m => m.id === 'pending-response');
+          if (pendingIdx >= 0) {
+            this.messages[pendingIdx].id = msg.payload.messageId;
+          }
           // Attach tool use to the current fable message (or create one)
           const toolMsg = this.messages.find(m => m.id === msg.payload.messageId)
             || this.messages[this.messages.length - 1];
@@ -222,6 +275,10 @@ export const useChatStore = defineStore('chat', {
         }
 
         case 'error': {
+          // Clear streaming state and remove pending placeholder
+          this.isStreaming = false;
+          const pendingErrIdx = this.messages.findIndex(m => m.id === 'pending-response');
+          if (pendingErrIdx >= 0) this.messages.splice(pendingErrIdx, 1);
           this.addLog({
             id: crypto.randomUUID(),
             timestamp: new Date().toISOString(),

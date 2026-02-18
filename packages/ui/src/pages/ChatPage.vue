@@ -97,9 +97,9 @@ onUnmounted(() => {
   unwatchConnected?.();
 });
 
-// Auto-scroll to bottom when messages change
+// Auto-scroll to bottom when messages change or streaming updates arrive
 watch(
-  () => chatStore.messages.length,
+  () => [chatStore.messages.length, chatStore.streamTick],
   async () => {
     await nextTick();
     if (messagesRef.value) {

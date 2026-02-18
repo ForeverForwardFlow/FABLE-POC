@@ -14,8 +14,10 @@
       <div
         v-if="message.role === 'fable'"
         class="chat-message__content markdown-body"
-        v-html="renderedContent"
-      />
+      >
+        <span v-html="renderedContent" />
+        <span v-if="message.metadata?.isStreaming" class="streaming-cursor">▌</span>
+      </div>
       <div v-else class="chat-message__content">{{ message.content }}</div>
 
       <ProgressBar
@@ -158,6 +160,18 @@ const renderedContent = computed(() => {
     margin-top: 12px;
     flex-wrap: wrap;
   }
+}
+
+.streaming-cursor {
+  display: inline;
+  color: var(--ff-accent, #a78bfa);
+  animation: blink 0.8s step-end infinite;
+  font-weight: 300;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
 }
 
 </style>
