@@ -706,12 +706,13 @@ const INTERNAL_WORKFLOW_TOOLS: BedrockTool[] = [
   },
   {
     name: 'fable_remember_preference',
-    description: 'Save a user preference or pattern for future conversations. Use this when the user explicitly states a preference (e.g., "I prefer simple UIs", "always use metric units") or when you notice a consistent pattern in their requests. Do NOT call this for one-off task instructions — only for durable preferences.',
+    description: 'Save a user preference or pattern for future conversations. Use this when the user explicitly states a preference (e.g., "I prefer simple UIs", "always use metric units") or when you notice a consistent pattern in their requests. Do NOT call this for one-off task instructions — only for durable preferences. Set shared=true for team/org-wide preferences (e.g., "Our team uses snake_case for APIs").',
     input_schema: {
       type: 'object',
       properties: {
         content: { type: 'string', description: 'The preference to remember (e.g., "User prefers detailed technical explanations", "User likes tools with example buttons")' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Tags for categorization (e.g., ["ui", "style"], ["communication"])' },
+        shared: { type: 'boolean', description: 'If true, this preference is shared with all users in the organization. Use for team-wide conventions.' },
       },
       required: ['content'],
     },
@@ -1061,6 +1062,8 @@ async function handleRememberPreference(
 ): Promise<unknown> {
   const content = input.content as string;
   const tags = (input.tags as string[]) || ['preference'];
+  const shared = input.shared === true;
+  const scope = shared ? 'project' : 'user'; // 'project' maps to org-level in memory DB
 
   try {
     const response = await lambdaClient.send(new InvokeCommand({
@@ -1070,10 +1073,10 @@ async function handleRememberPreference(
         payload: {
           type: 'preference',
           content,
-          scope: 'user',
+          scope,
           source: 'user_stated',
-          importance: 0.8,
-          tags,
+          importance: shared ? 0.9 : 0.8, // Org-wide preferences are slightly more important
+          tags: shared ? [...tags, 'team', 'shared'] : tags,
           userId: toMemoryUserId(userId),
           orgId: toMemoryOrgId(orgId),
         },
@@ -1085,7 +1088,8 @@ async function handleRememberPreference(
       const body = JSON.parse(result.body);
 
       if (body.success) {
-        return { success: true, message: `I'll remember that: "${content}"` };
+        const shareLabel = shared ? ' (shared with your team)' : '';
+        return { success: true, message: `I'll remember that${shareLabel}: "${content}"` };
       }
     }
 
