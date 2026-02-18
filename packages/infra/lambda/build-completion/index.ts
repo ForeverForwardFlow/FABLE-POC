@@ -29,7 +29,8 @@ const WORKFLOWS_TABLE = process.env.WORKFLOWS_TABLE;
 const WORKFLOW_EXECUTOR_ARN = process.env.WORKFLOW_EXECUTOR_ARN;
 const SCHEDULER_ROLE_ARN = process.env.SCHEDULER_ROLE_ARN;
 const STAGE = process.env.STAGE || 'dev';
-const VERSION = '7'; // bump to force deploy
+const AUDIT_LOG_TABLE = process.env.AUDIT_LOG_TABLE;
+const VERSION = '8'; // bump to force deploy
 
 interface EcsTaskStateChangeEvent {
   detail: {
@@ -591,6 +592,33 @@ async function updateBuildStatus(
     ExpressionAttributeNames: names,
     ExpressionAttributeValues: values,
   }));
+
+  // Write audit log for build status changes
+  if (AUDIT_LOG_TABLE) {
+    try {
+      const now = new Date().toISOString();
+      const eventId = `${now}#${buildRecord.buildId}`;
+      await docClient.send(new PutCommand({
+        TableName: AUDIT_LOG_TABLE,
+        Item: {
+          PK: buildRecord.PK as string, // ORG#{orgId}
+          SK: `EVENT#${eventId}`,
+          action: `build_${status}`,
+          resource: 'build',
+          resourceId: buildRecord.buildId as string,
+          actor: (buildRecord.userId as string) || 'system',
+          timestamp: now,
+          details: {
+            request: buildRecord.request,
+            buildCycle: buildRecord.buildCycle,
+            ...(error && { error }),
+          },
+        },
+      }));
+    } catch (auditErr) {
+      console.warn('Failed to write audit log:', auditErr);
+    }
+  }
 }
 
 async function completeParentBuilds(conversationId: string, currentBuildId: string, orgId: string): Promise<void> {

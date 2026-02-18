@@ -210,6 +210,15 @@ export class FableStack extends cdk.Stack {
       sortKey: { name: 'GSI1SK', type: dynamodb.AttributeType.STRING },
     });
 
+    // Audit Log table (immutable infrastructure modification log)
+    const auditLogTable = new dynamodb.Table(this, 'AuditLogTable', {
+      tableName: `fable-${stage}-audit-log`,
+      partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },  // ORG#{orgId}
+      sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },       // EVENT#{timestamp}#{uuid}
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: stage === 'prod' ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+    });
+
     // ============================================================
     // S3 Bucket for artifacts
     // ============================================================
@@ -703,6 +712,10 @@ export class FableStack extends cdk.Stack {
       actions: ['iam:PassRole'],
       resources: [toolExecutionRole.roleArn],
     }));
+
+    // Grant Tool Deployer access to audit log
+    auditLogTable.grantWriteData(toolDeployerFn);
+    toolDeployerFn.addEnvironment('AUDIT_LOG_TABLE', auditLogTable.tableName);
 
     // Grant Tool Deployer access to tools table, artifacts bucket, and GitHub secret
     this.toolsTable.grantReadWriteData(toolDeployerFn);
@@ -1251,6 +1264,8 @@ export class FableStack extends cdk.Stack {
       actions: ['bedrock:InvokeModel'],
       resources: ['*'],
     }));
+    auditLogTable.grantWriteData(buildCompletionFn);
+    buildCompletionFn.addEnvironment('AUDIT_LOG_TABLE', auditLogTable.tableName);
 
     // EventBridge rule: ECS task stopped → completion Lambda
     new events.Rule(this, 'BuildTaskCompletionRule', {

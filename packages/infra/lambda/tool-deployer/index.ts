@@ -31,6 +31,7 @@ const ARTIFACTS_BUCKET = process.env.ARTIFACTS_BUCKET!;
 const TOOL_ROLE_ARN = process.env.TOOL_ROLE_ARN!;
 const STAGE = process.env.STAGE || 'dev';
 const GITHUB_SECRET_ARN = process.env.GITHUB_SECRET_ARN;
+const AUDIT_LOG_TABLE = process.env.AUDIT_LOG_TABLE;
 
 interface DeployToolInput {
   toolName: string;
@@ -269,6 +270,84 @@ async function prepareGitHubArtifact(input: {
   return { s3Bucket: ARTIFACTS_BUCKET, s3Key };
 }
 
+async function writeAuditLog(event: {
+  orgId: string;
+  action: string;
+  resource: string;
+  resourceId: string;
+  actor: string;
+  details?: Record<string, unknown>;
+}): Promise<void> {
+  if (!AUDIT_LOG_TABLE) return;
+  try {
+    const now = new Date().toISOString();
+    const eventId = `${now}#${crypto.randomUUID()}`;
+    await docClient.send(new PutCommand({
+      TableName: AUDIT_LOG_TABLE,
+      Item: {
+        PK: `ORG#${event.orgId}`,
+        SK: `EVENT#${eventId}`,
+        action: event.action,
+        resource: event.resource,
+        resourceId: event.resourceId,
+        actor: event.actor,
+        timestamp: now,
+        details: event.details,
+      },
+    }));
+  } catch (err) {
+    console.warn('Failed to write audit log:', err);
+  }
+}
+
+function validateToolSchema(toolName: string, schema: DeployToolInput['schema']): string[] {
+  const errors: string[] = [];
+
+  if (!schema) {
+    errors.push('schema is required');
+    return errors;
+  }
+
+  if (!schema.name || typeof schema.name !== 'string') {
+    errors.push('schema.name is required and must be a string');
+  }
+  if (!schema.description || typeof schema.description !== 'string') {
+    errors.push('schema.description is required and must be a string');
+  }
+  if (!schema.inputSchema || typeof schema.inputSchema !== 'object') {
+    errors.push('schema.inputSchema is required and must be an object');
+    return errors;
+  }
+
+  const input = schema.inputSchema;
+
+  // Must be a JSON Schema object
+  if (input.type !== 'object') {
+    errors.push(`schema.inputSchema.type must be "object", got "${input.type}"`);
+  }
+
+  // Properties should exist (tools without inputs are suspicious)
+  if (!input.properties || typeof input.properties !== 'object') {
+    errors.push('schema.inputSchema.properties is required');
+  }
+
+  // Check for Bedrock-incompatible keywords
+  const badKeywords = ['oneOf', 'allOf', 'anyOf', 'not', '$ref'];
+  const schemaStr = JSON.stringify(input);
+  for (const kw of badKeywords) {
+    if (schemaStr.includes(`"${kw}"`)) {
+      errors.push(`schema.inputSchema contains "${kw}" which is incompatible with Bedrock tool_use`);
+    }
+  }
+
+  // Tool name should match schema name (warning, not error)
+  if (schema.name && toolName && schema.name !== toolName) {
+    console.warn(`Tool name "${toolName}" differs from schema name "${schema.name}" — this may cause confusion`);
+  }
+
+  return errors;
+}
+
 async function deployTool(input: DeployToolInput): Promise<{ statusCode: number; body: string }> {
   const {
     toolName,
@@ -287,6 +366,20 @@ async function deployTool(input: DeployToolInput): Promise<{ statusCode: number;
     gitPath,
     gitCommit,
   } = input;
+
+  // Validate schema before deployment
+  const schemaErrors = validateToolSchema(toolName, schema);
+  if (schemaErrors.length > 0) {
+    console.error(`Schema validation failed for ${toolName}:`, schemaErrors);
+    return {
+      statusCode: 400,
+      body: JSON.stringify({
+        error: 'Schema validation failed',
+        toolName,
+        validationErrors: schemaErrors,
+      }),
+    };
+  }
 
   // Resolve deployment artifact: S3 key directly, or download from GitHub
   let s3Key = inputS3Key;
@@ -425,6 +518,15 @@ async function deployTool(input: DeployToolInput): Promise<{ statusCode: number;
 
   console.log(`Tool deployed successfully: ${functionUrl}`);
 
+  await writeAuditLog({
+    orgId,
+    action: isUpdate ? 'tool_updated' : 'tool_created',
+    resource: 'tool',
+    resourceId: toolName,
+    actor: userId || 'system',
+    details: { functionName, functionUrl, deployedBy, s3Key },
+  });
+
   return {
     statusCode: 200,
     body: JSON.stringify({
@@ -472,6 +574,15 @@ async function undeployTool(input: UndeployToolInput): Promise<{ statusCode: num
   }));
 
   console.log(`Tool undeployed: ${toolName}`);
+
+  await writeAuditLog({
+    orgId,
+    action: 'tool_deleted',
+    resource: 'tool',
+    resourceId: toolName,
+    actor: 'system',
+    details: { functionName },
+  });
 
   return {
     statusCode: 200,
