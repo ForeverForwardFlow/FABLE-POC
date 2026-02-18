@@ -242,6 +242,23 @@ echo "Claude CLI version:"
 claude --version || echo "Could not get version"
 echo ""
 
+# Build timeout enforcement (default: 15 minutes)
+BUILD_TIMEOUT=${FABLE_BUILD_TIMEOUT:-900}
+BUILD_START=$(date +%s)
+
+check_timeout() {
+    local elapsed=$(( $(date +%s) - BUILD_START ))
+    if [ $elapsed -ge $BUILD_TIMEOUT ]; then
+        echo "=== BUILD TIMEOUT: ${elapsed}s elapsed (limit: ${BUILD_TIMEOUT}s) ==="
+        echo "{\"status\":\"error\",\"error\":\"Build timed out after ${elapsed}s\"}" > ./output.json
+        if [ -n "$ARTIFACTS_BUCKET" ] && [ -n "$FABLE_BUILD_ID" ]; then
+            S3_KEY="builds/${FABLE_BUILD_ID}/${PHASE}-output.json"
+            aws s3 cp ./output.json "s3://${ARTIFACTS_BUCKET}/${S3_KEY}" 2>/dev/null || true
+        fi
+        exit 1
+    fi
+}
+
 # Inner retry loop: iterate until build succeeds or max iterations reached
 MAX_ITERATIONS=${MAX_BUILDER_ITERATIONS:-3}
 ITER=1
@@ -256,12 +273,14 @@ while [ $ITER -le $MAX_ITERATIONS ]; do
         PROMPT="Read build-spec.json and CLAUDE.md. Your previous attempt (iteration $((ITER-1))) failed. Read previous-attempt.json to understand what went wrong. Fix the issues and output the result to output.json"
     fi
 
+    check_timeout
+
     echo "Running Claude with prompt: $PROMPT"
     echo ""
 
-    # Run Claude Code
+    # Run Claude Code with timeout
     # Note: `claude -p` buffers all output until completion (not a TTY).
-    claude -p "$PROMPT" --dangerously-skip-permissions 2>&1 || {
+    timeout "${BUILD_TIMEOUT}s" claude -p "$PROMPT" --dangerously-skip-permissions 2>&1 || {
         EXIT_CODE=$?
         echo "Claude exited with code: $EXIT_CODE"
     }

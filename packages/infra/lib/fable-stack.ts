@@ -20,6 +20,9 @@ import * as eventsTargets from 'aws-cdk-lib/aws-events-targets';
 import * as path from 'path';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cw_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
+import * as sns from 'aws-cdk-lib/aws-sns';
 import type { FableConfig } from './fable-config';
 
 export interface FableStackProps extends cdk.StackProps {
@@ -1176,6 +1179,7 @@ export class FableStack extends cdk.Stack {
         BUILD_TASK_DEF: buildTaskDefinition.taskDefinitionArn,
         BUILD_SUBNETS: this.vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }).subnetIds.join(','),
         BUILD_SECURITY_GROUP: buildSecurityGroup.securityGroupId,
+        MAX_CONCURRENT_BUILDS: '3',
       },
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
@@ -1258,10 +1262,48 @@ export class FableStack extends cdk.Stack {
       targets: [new eventsTargets.LambdaFunction(buildCompletionFn)],
     });
 
-    // REMOVED: Step Functions State Machine + getTaskOutputFn + updateBuildStatusFn
-    // (~300 lines) Replaced by simplified Chat -> Builder -> Deploy flow
-    // See iteration-2/ archive for the original implementation
-    //
+    // ============================================================
+    // CloudWatch Alarms & SNS Notifications
+    // ============================================================
+    const alarmTopic = new sns.Topic(this, 'AlarmTopic', {
+      topicName: `fable-${stage}-alarms`,
+      displayName: `FABLE ${stage} Alarms`,
+    });
+
+    // Chat Lambda error alarm (>5 errors in 5 minutes)
+    new cloudwatch.Alarm(this, 'ChatLambdaErrorAlarm', {
+      alarmName: `fable-${stage}-chat-errors`,
+      alarmDescription: 'Chat Lambda is producing errors',
+      metric: chatFn.metricErrors({ period: cdk.Duration.minutes(5) }),
+      threshold: 5,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(new cw_actions.SnsAction(alarmTopic));
+
+    // Router Lambda error alarm (>10 errors in 5 minutes)
+    new cloudwatch.Alarm(this, 'RouterLambdaErrorAlarm', {
+      alarmName: `fable-${stage}-router-errors`,
+      alarmDescription: 'Router Lambda is producing errors',
+      metric: routerFn.metricErrors({ period: cdk.Duration.minutes(5) }),
+      threshold: 10,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(new cw_actions.SnsAction(alarmTopic));
+
+    // Build Completion Lambda error alarm (>3 errors in 15 minutes)
+    new cloudwatch.Alarm(this, 'BuildCompletionErrorAlarm', {
+      alarmName: `fable-${stage}-build-completion-errors`,
+      alarmDescription: 'Build Completion Lambda is producing errors',
+      metric: buildCompletionFn.metricErrors({ period: cdk.Duration.minutes(15) }),
+      threshold: 3,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(new cw_actions.SnsAction(alarmTopic));
+
+    new cdk.CfnOutput(this, 'AlarmTopicArn', {
+      value: alarmTopic.topicArn,
+      description: 'SNS topic ARN for CloudWatch alarms — subscribe your email to receive notifications',
+    });
 
     // ============================================================
     // WebSocket API Gateway

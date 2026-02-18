@@ -1,6 +1,6 @@
 import { ECSClient, RunTaskCommand } from '@aws-sdk/client-ecs';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { randomUUID } from 'crypto';
 
 const ecsClient = new ECSClient({});
@@ -15,6 +15,7 @@ const BUILD_SUBNETS = process.env.BUILD_SUBNETS!;
 const BUILD_SECURITY_GROUP = process.env.BUILD_SECURITY_GROUP!;
 const BUILDS_TABLE = process.env.BUILDS_TABLE!;
 const STAGE = process.env.STAGE || 'dev';
+const MAX_CONCURRENT_BUILDS = parseInt(process.env.MAX_CONCURRENT_BUILDS || '3', 10);
 
 interface BuildRequest {
   // What the user wants built
@@ -101,6 +102,34 @@ async function startBuild(request: BuildRequest): Promise<{ statusCode: number; 
   if (conversationId) item.conversationId = conversationId;
   if (connectionId) item.connectionId = connectionId;
   if (buildCycle > 1) item.buildCycle = buildCycle;
+
+  // Check concurrent build limit before recording
+  const activeBuilds = await docClient.send(new QueryCommand({
+    TableName: BUILDS_TABLE,
+    KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+    FilterExpression: '#s IN (:pending, :retrying)',
+    ExpressionAttributeNames: { '#s': 'status' },
+    ExpressionAttributeValues: {
+      ':pk': `ORG#${orgId}`,
+      ':sk': 'BUILD#',
+      ':pending': 'pending',
+      ':retrying': 'retrying',
+    },
+    Select: 'COUNT',
+  }));
+
+  if ((activeBuilds.Count || 0) >= MAX_CONCURRENT_BUILDS) {
+    console.log(`Concurrency limit hit: ${activeBuilds.Count} active builds for org ${orgId} (limit: ${MAX_CONCURRENT_BUILDS})`);
+    return {
+      statusCode: 429,
+      body: JSON.stringify({
+        error: 'Too many concurrent builds',
+        activeBuilds: activeBuilds.Count,
+        limit: MAX_CONCURRENT_BUILDS,
+        message: `You have ${activeBuilds.Count} builds running. Please wait for one to finish before starting another.`,
+      }),
+    };
+  }
 
   await docClient.send(new PutCommand({
     TableName: BUILDS_TABLE,

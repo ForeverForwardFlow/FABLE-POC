@@ -512,7 +512,7 @@ When a user reports a bug or issue with FABLE itself (UI display problems, broke
 Ask enough to understand the issue (what's happening vs what should happen), then start the fix build. If the user describes a clear bug, don't over-question — fix it.
 
 ## Current Context
-- Conversation has ${context.messages.length} previous messages
+- Conversation has ${context.messages?.length || 0} previous messages
 - Active build: ${context.activeBuildId || 'none'}`;
 
   if (preferences.length > 0) {
