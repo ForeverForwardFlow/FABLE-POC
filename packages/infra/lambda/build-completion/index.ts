@@ -30,7 +30,9 @@ const WORKFLOW_EXECUTOR_ARN = process.env.WORKFLOW_EXECUTOR_ARN;
 const SCHEDULER_ROLE_ARN = process.env.SCHEDULER_ROLE_ARN;
 const STAGE = process.env.STAGE || 'dev';
 const AUDIT_LOG_TABLE = process.env.AUDIT_LOG_TABLE;
-const VERSION = '8'; // bump to force deploy
+const CONVERSATIONS_TABLE = process.env.CONVERSATIONS_TABLE;
+const MEMORY_LAMBDA_ARN = process.env.MEMORY_LAMBDA_ARN;
+const VERSION = '9'; // bump to force deploy
 
 interface EcsTaskStateChangeEvent {
   detail: {
@@ -234,6 +236,17 @@ export const handler = async (event: EcsTaskStateChangeEvent): Promise<void> => 
           type: 'build_completed',
           payload: { buildId, status: 'completed', tools: deployedTools, workflows: createdWorkflows },
         });
+
+        // Extract learnings from the build conversation (fire-and-forget)
+        if (buildRecord.conversationId && deployedTools.length > 0) {
+          const firstTool = deployedTools[0]?.toolName || 'unknown';
+          extractConversationMemories(
+            buildRecord.conversationId as string,
+            orgId as string,
+            userId as string,
+            firstTool,
+          ).catch(err => console.warn('Memory extraction failed:', err));
+        }
       } else {
         // QA FAILED — outer retry loop
         const failureContext = {
@@ -513,6 +526,100 @@ async function retryOrAskForHelp(
         buildCycle,
       },
     });
+  }
+}
+
+async function extractConversationMemories(
+  conversationId: string,
+  orgId: string,
+  userId: string,
+  toolName: string,
+): Promise<void> {
+  if (!CONVERSATIONS_TABLE || !MEMORY_LAMBDA_ARN) return;
+
+  try {
+    // Fetch conversation messages
+    const convResult = await docClient.send(new QueryCommand({
+      TableName: CONVERSATIONS_TABLE,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+      ExpressionAttributeValues: {
+        ':pk': `CONV#${conversationId}`,
+        ':sk': 'MSG#',
+      },
+      ScanIndexForward: true,
+    }));
+
+    const messages = convResult.Items || [];
+    if (messages.length < 2) return; // Need at least a back-and-forth
+
+    // Build conversation text for analysis
+    const conversationText = messages
+      .map((m) => `${m.role === 'user' ? 'User' : 'FABLE'}: ${(m.content as string || '').slice(0, 500)}`)
+      .join('\n');
+
+    if (conversationText.length < 50) return;
+
+    // Ask Haiku to extract key decisions and preferences
+    const extractionPrompt = `Analyze this conversation where a user requested FABLE to build "${toolName}". Extract any notable:
+1. User preferences (coding style, UI preferences, naming conventions)
+2. Key decisions made during requirement gathering
+3. Domain knowledge revealed (industry terms, business rules)
+
+Return ONLY a JSON array of objects with {type, content} where type is "preference", "insight", or "pattern".
+If nothing notable, return an empty array [].
+Keep each content under 100 characters. Max 3 items.
+
+Conversation:
+${conversationText.slice(0, 3000)}`;
+
+    const bedrockResponse = await bedrockClient.send(new InvokeModelCommand({
+      modelId: 'anthropic.claude-3-5-haiku-20241022-v1:0',
+      contentType: 'application/json',
+      accept: 'application/json',
+      body: JSON.stringify({
+        anthropic_version: 'bedrock-2023-05-31',
+        max_tokens: 500,
+        messages: [{ role: 'user', content: extractionPrompt }],
+      }),
+    }));
+
+    const bedrockBody = JSON.parse(new TextDecoder().decode(bedrockResponse.body));
+    const responseText = bedrockBody.content?.[0]?.text || '[]';
+
+    // Parse extracted memories
+    const jsonMatch = responseText.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) return;
+
+    const extracted = JSON.parse(jsonMatch[0]) as Array<{ type: string; content: string }>;
+    if (!Array.isArray(extracted) || extracted.length === 0) return;
+
+    console.log(`Extracted ${extracted.length} memories from conversation ${conversationId}`);
+
+    // Save each memory via Memory Lambda
+    for (const mem of extracted.slice(0, 3)) {
+      const memType = ['preference', 'insight', 'pattern'].includes(mem.type) ? mem.type : 'insight';
+      await lambdaClient.send(new InvokeCommand({
+        FunctionName: MEMORY_LAMBDA_ARN,
+        Payload: Buffer.from(JSON.stringify({
+          action: 'create',
+          payload: {
+            type: memType,
+            content: mem.content,
+            scope: 'project',
+            source: 'ai_inferred',
+            tags: ['auto-extracted', 'conversation', toolName],
+            orgId,
+            userId,
+            importance: 0.5,
+          },
+        })),
+        InvocationType: 'Event', // Fire-and-forget
+      }));
+    }
+
+    console.log(`Saved ${Math.min(extracted.length, 3)} conversation memories`);
+  } catch (err) {
+    console.warn('Failed to extract conversation memories:', err);
   }
 }
 

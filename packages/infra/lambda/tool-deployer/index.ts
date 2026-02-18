@@ -11,7 +11,7 @@ import {
 } from '@aws-sdk/client-lambda';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, DeleteCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import JSZip from 'jszip';
 import * as crypto from 'crypto';
@@ -407,6 +407,7 @@ async function deployTool(input: DeployToolInput): Promise<{ statusCode: number;
   let functionArn: string;
   let functionUrl: string;
   let isUpdate = false;
+  let currentVersion = 0;
 
   // Check if function already exists
   try {
@@ -416,6 +417,37 @@ async function deployTool(input: DeployToolInput): Promise<{ statusCode: number;
     functionArn = existing.Configuration!.FunctionArn!;
     isUpdate = true;
     console.log(`Function exists, updating code...`);
+
+    // Read current tool record to snapshot the previous version
+    try {
+      const currentRecord = await docClient.send(new GetCommand({
+        TableName: TOOLS_TABLE,
+        Key: { PK: `ORG#${orgId}`, SK: `TOOL#${toolName}` },
+      }));
+      if (currentRecord.Item) {
+        currentVersion = (typeof currentRecord.Item.version === 'number' ? currentRecord.Item.version : 0);
+        // Save version snapshot
+        await docClient.send(new PutCommand({
+          TableName: TOOLS_TABLE,
+          Item: {
+            PK: `ORG#${orgId}`,
+            SK: `TOOLVERSION#${toolName}#${String(currentVersion).padStart(5, '0')}`,
+            toolName,
+            version: currentVersion,
+            s3Key: currentRecord.Item.s3Key,
+            s3Bucket: currentRecord.Item.s3Bucket,
+            schema: currentRecord.Item.schema,
+            description: currentRecord.Item.description,
+            uiDefinition: currentRecord.Item.uiDefinition,
+            archivedAt: new Date().toISOString(),
+            deployedBy: currentRecord.Item.deployedBy,
+          },
+        }));
+        console.log(`Archived version ${currentVersion} of ${toolName}`);
+      }
+    } catch (snapshotErr) {
+      console.warn('Failed to snapshot previous version:', snapshotErr);
+    }
 
     // Update existing function code
     await lambdaClient.send(new UpdateFunctionCodeCommand({
@@ -503,7 +535,7 @@ async function deployTool(input: DeployToolInput): Promise<{ statusCode: number;
       userId,
       createdAt: isUpdate ? undefined : now,
       updatedAt: now,
-      version: isUpdate ? { $add: 1 } : 1,
+      version: isUpdate ? currentVersion + 1 : 1,
       GSI1PK: `TOOL#${toolName}`,
       GSI1SK: `ORG#${orgId}`,
       // UI definition for dynamic frontend rendering

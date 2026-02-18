@@ -1266,6 +1266,10 @@ export class FableStack extends cdk.Stack {
     }));
     auditLogTable.grantWriteData(buildCompletionFn);
     buildCompletionFn.addEnvironment('AUDIT_LOG_TABLE', auditLogTable.tableName);
+    this.conversationsTable.grantReadData(buildCompletionFn);
+    buildCompletionFn.addEnvironment('CONVERSATIONS_TABLE', this.conversationsTable.tableName);
+    memoryFn.grantInvoke(buildCompletionFn);
+    buildCompletionFn.addEnvironment('MEMORY_LAMBDA_ARN', memoryFn.functionArn);
 
     // EventBridge rule: ECS task stopped → completion Lambda
     new events.Rule(this, 'BuildTaskCompletionRule', {
