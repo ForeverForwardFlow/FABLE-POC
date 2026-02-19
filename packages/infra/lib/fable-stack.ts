@@ -488,6 +488,7 @@ export class FableStack extends cdk.Stack {
     this.connectionsTable.grantReadWriteData(chatFn);
     this.conversationsTable.grantReadWriteData(routerFn);
     this.conversationsTable.grantReadWriteData(chatFn);
+    this.buildsTable.grantReadData(routerFn); // Router handles list_builds
     this.toolsTable.grantReadData(chatFn); // Chat needs to discover tools
     this.workflowsTable.grantReadWriteData(chatFn); // Chat manages workflows
     dbCredentials.grantRead(chatFn);
@@ -808,6 +809,29 @@ export class FableStack extends cdk.Stack {
       effect: iam.Effect.ALLOW,
       actions: ['cloudfront:CreateInvalidation'],
       resources: [`arn:aws:cloudfront::${this.account}:distribution/${frontendDistribution.distributionId}`],
+    }));
+
+    // Grant GitHub Actions permissions for CDK deploy (infrastructure CI/CD)
+    githubDeployRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'cloudformation:*',
+        'lambda:*',
+        'iam:GetRole', 'iam:CreateRole', 'iam:DeleteRole',
+        'iam:PutRolePolicy', 'iam:DeleteRolePolicy',
+        'iam:AttachRolePolicy', 'iam:DetachRolePolicy',
+        'iam:GetRolePolicy', 'iam:PassRole', 'iam:TagRole',
+        'apigateway:*', 'execute-api:*',
+        'dynamodb:*', 'ecs:*', 'ecr:*',
+        'ec2:Describe*', 'ec2:CreateSecurityGroup', 'ec2:DeleteSecurityGroup',
+        'ec2:AuthorizeSecurityGroup*', 'ec2:RevokeSecurityGroup*',
+        'logs:*', 'events:*', 'scheduler:*',
+        'cognito-idp:*', 'ssm:GetParameter',
+        'secretsmanager:GetSecretValue', 'secretsmanager:DescribeSecret',
+        'sts:AssumeRole',
+      ],
+      resources: ['*'],
+      conditions: { StringEquals: { 'aws:RequestedRegion': config.region } },
     }));
 
     // MCP Gateway needs to invoke and delete tool Lambdas
@@ -1182,6 +1206,7 @@ export class FableStack extends cdk.Stack {
         FRONTEND_BUCKET: frontendBucket.bucketName,
         CLOUDFRONT_DISTRIBUTION_ID: frontendDistribution.distributionId,
         MAX_BUILDER_ITERATIONS: '3',
+        FABLE_INFRA_REPO: `https://github.com/${config.toolsRepo}.git`,
       },
     });
 

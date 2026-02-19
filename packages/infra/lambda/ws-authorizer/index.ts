@@ -62,9 +62,14 @@ export const handler = async (event: AuthorizerEvent): Promise<AuthorizerRespons
     const payload = await verifier.verify(token);
     console.log(`Token verified for user: ${payload.sub}`);
 
+    // Single-tenant mode: always use 'default' orgId to avoid partition mismatch
+    // between tools deployed via MCP API (which has no JWT authorizer and falls back
+    // to 'default') and tools deployed via authenticated build pipeline.
+    // TODO: When multi-tenancy is needed, add JWT authorizer to MCP HTTP API Gateway
+    // and remove this override so orgId flows from custom:orgId claim.
     return generatePolicy(payload.sub as string, 'Allow', event.methodArn, {
       userId: payload.sub as string,
-      orgId: (payload['custom:orgId'] as string) || 'default',
+      orgId: 'default',
       email: (payload.email as string) || '',
     });
   } catch (error) {

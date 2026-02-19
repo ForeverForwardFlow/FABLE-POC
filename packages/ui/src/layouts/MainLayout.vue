@@ -144,7 +144,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useUIStore } from 'src/stores/ui-store';
 import { useChatStore } from 'src/stores/chat-store';
@@ -153,6 +153,7 @@ import { useAuthStore } from 'src/stores/auth-store';
 import { fableWs } from 'src/boot/websocket';
 import ErrorBoundary from 'src/components/ErrorBoundary.vue';
 import { useKeyboardShortcuts } from 'src/composables/useKeyboardShortcuts';
+import type { WsIncomingMessage } from 'src/types';
 
 useKeyboardShortcuts();
 
@@ -185,6 +186,7 @@ const navItems = [
   { name: 'chat', label: 'Chat', icon: 'chat' },
   { name: 'tools', label: 'Tools', icon: 'build' },
   { name: 'workflows', label: 'Workflows', icon: 'schedule' },
+  { name: 'writing-analytics', label: 'Writing Analytics', icon: 'analytics' },
   { name: 'builds', label: 'Builds', icon: 'construction' },
   { name: 'settings', label: 'Settings', icon: 'settings' },
 ];
@@ -222,6 +224,43 @@ function formatTime(isoString: string): string {
   if (diffDays < 7) return `${diffDays}d ago`;
   return date.toLocaleDateString();
 }
+
+// Close sidebar on mobile after navigation
+router.afterEach(() => {
+  uiStore.closeSidebarOnMobile();
+});
+
+// Load conversations globally so sidebar shows them on all pages
+let convUnsubscribe: (() => void) | null = null;
+let convUnwatchConnected: (() => void) | null = null;
+
+onMounted(() => {
+  convUnsubscribe = fableWs.onMessage((msg: WsIncomingMessage) => {
+    if (msg.type === 'conversations_list') {
+      conversationsStore.handleConversationsList(msg.payload.conversations);
+    }
+    if (msg.type === 'conversation_deleted') {
+      conversationsStore.handleConversationDeleted(msg.payload.conversationId);
+    }
+  });
+
+  if (fableWs.connected.value) {
+    conversationsStore.fetchConversations();
+  } else {
+    convUnwatchConnected = watch(fableWs.connected, (isConnected) => {
+      if (isConnected) {
+        conversationsStore.fetchConversations();
+        convUnwatchConnected?.();
+        convUnwatchConnected = null;
+      }
+    });
+  }
+});
+
+onUnmounted(() => {
+  convUnsubscribe?.();
+  convUnwatchConnected?.();
+});
 </script>
 
 <style lang="scss" scoped>

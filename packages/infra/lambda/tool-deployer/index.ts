@@ -538,8 +538,8 @@ async function deployTool(input: DeployToolInput): Promise<{ statusCode: number;
       version: isUpdate ? currentVersion + 1 : 1,
       GSI1PK: `TOOL#${toolName}`,
       GSI1SK: `ORG#${orgId}`,
-      // UI definition for dynamic frontend rendering
-      ...(uiDefinition && { uiDefinition }),
+      // UI definition for dynamic frontend rendering (normalized)
+      ...(uiDefinition && { uiDefinition: normalizeUiDefinition(uiDefinition) }),
       // Git metadata (for GitHub-deployed tools)
       ...(gitRepo && { gitRepo }),
       ...(gitPath && { gitPath }),
@@ -700,6 +700,34 @@ async function mergeFeatureBranch(repoFullName: string, branch: string): Promise
   );
 
   console.log(`Merge successful: ${result.sha}`);
+}
+
+/**
+ * Normalize uiDefinition from builder output to the canonical format the frontend expects.
+ * Builders sometimes use variant field names (displayName vs title, formFields vs form.fields).
+ */
+function normalizeUiDefinition(ui: Record<string, unknown>): Record<string, unknown> {
+  const normalized: Record<string, unknown> = { ...ui };
+
+  // displayName → title
+  if (normalized.displayName && !normalized.title) {
+    normalized.title = normalized.displayName;
+    delete normalized.displayName;
+  }
+
+  // subtitle (keep as-is)
+
+  // formFields (flat array) → form.fields (nested)
+  if (normalized.formFields && !normalized.form) {
+    normalized.form = {
+      fields: normalized.formFields,
+      submitLabel: (normalized.submitLabel as string) || undefined,
+    };
+    delete normalized.formFields;
+    delete normalized.submitLabel;
+  }
+
+  return normalized;
 }
 
 function githubApiRequest(method: string, path: string, token: string, body?: unknown): Promise<Record<string, unknown>> {

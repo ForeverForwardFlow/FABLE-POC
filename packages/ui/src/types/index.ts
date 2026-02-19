@@ -14,6 +14,8 @@ export interface ToolUse {
   toolId: string;
   input?: Record<string, unknown>;
   result?: unknown;
+  approvalStatus?: 'pending' | 'approved' | 'denied';
+  description?: string;
 }
 
 export interface ChatMessage {
@@ -180,6 +182,7 @@ export interface WsOutgoingMessage {
     content?: string;
     conversationId?: string;
     memoryId?: string;
+    approvedTools?: string[];
   };
 }
 
@@ -194,6 +197,7 @@ export type WsIncomingMessage =
   | { type: 'build_needs_help'; payload: { buildId: string; message: string } }
   | { type: 'tool_use'; payload: { toolName: string; toolId: string; messageId: string; input?: Record<string, unknown> } }
   | { type: 'tool_result'; payload: { toolId: string; result: unknown; messageId: string } }
+  | { type: 'tool_approval_request'; payload: { toolName: string; toolId: string; messageId: string; input?: Record<string, unknown>; description?: string } }
   | { type: 'conversations_list'; payload: { conversations: ConversationSummary[] } }
   | { type: 'conversation_loaded'; payload: ConversationFull }
   | { type: 'conversation_deleted'; payload: { conversationId: string } }

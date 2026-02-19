@@ -1,7 +1,14 @@
 <template>
   <q-page class="tool-page">
-    <div v-if="!tool" class="tool-page__loading">
+    <div v-if="toolsStore.loading && !tool" class="tool-page__loading">
       <q-spinner-dots color="purple" size="40px" />
+    </div>
+
+    <div v-else-if="!tool" class="tool-page__not-found">
+      <q-icon name="search_off" size="48px" color="grey-7" />
+      <h2>Tool not found</h2>
+      <p>No tool named "{{ toolName }}" exists.</p>
+      <q-btn flat no-caps color="purple" label="Back to Tools" icon="arrow_back" :to="{ name: 'tools' }" />
     </div>
 
     <template v-else>
@@ -183,6 +190,28 @@ async function handleDelete() {
     display: flex;
     justify-content: center;
     padding: 60px 0;
+  }
+
+  &__not-found {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 60px 0;
+    text-align: center;
+    color: var(--ff-text-secondary);
+
+    h2 {
+      font-size: 20px;
+      font-weight: 600;
+      color: var(--ff-text-primary);
+      margin: 8px 0 0;
+    }
+
+    p {
+      font-size: 14px;
+      margin: 0;
+    }
   }
 
   &__header {

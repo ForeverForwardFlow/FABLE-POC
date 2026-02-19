@@ -1,12 +1,20 @@
 <template>
-  <div class="tool-use-block">
+  <div class="tool-use-block" :class="{ 'tool-use-block--pending': toolUse.approvalStatus === 'pending' }">
     <div class="tool-header" @click="expanded = !expanded">
       <q-icon :name="expanded ? 'expand_less' : 'build'" class="tool-icon" />
       <span class="tool-name">{{ toolUse.toolName }}</span>
 
       <span class="tool-spacer" />
 
-      <span v-if="toolUse.result" class="tool-status done">
+      <span v-if="toolUse.approvalStatus === 'pending'" class="tool-status pending">
+        <q-icon name="shield" size="16px" />
+        Approval needed
+      </span>
+      <span v-else-if="toolUse.approvalStatus === 'denied'" class="tool-status denied">
+        <q-icon name="block" size="16px" />
+        Denied
+      </span>
+      <span v-else-if="toolUse.result" class="tool-status done">
         <q-icon name="check_circle" size="16px" />
         Done
       </span>
@@ -16,6 +24,16 @@
       </span>
 
       <q-icon :name="expanded ? 'expand_less' : 'expand_more'" class="expand-icon" />
+    </div>
+
+    <!-- Approval action bar -->
+    <div v-if="toolUse.approvalStatus === 'pending'" class="tool-approval">
+      <div v-if="toolUse.description" class="tool-approval-desc">{{ toolUse.description }}</div>
+      <div class="tool-approval-actions">
+        <q-btn flat dense no-caps size="sm" color="positive" icon="check" label="Allow" @click.stop="$emit('approve', toolUse.toolName, false)" />
+        <q-btn flat dense no-caps size="sm" color="primary" icon="verified" label="Always Allow" @click.stop="$emit('approve', toolUse.toolName, true)" />
+        <q-btn flat dense no-caps size="sm" color="negative" icon="block" label="Deny" @click.stop="$emit('deny', toolUse.toolName)" />
+      </div>
     </div>
 
     <div v-show="expanded" class="tool-content">
@@ -38,6 +56,11 @@ import type { ToolUse } from 'src/types';
 
 const props = defineProps<{
   toolUse: ToolUse;
+}>();
+
+defineEmits<{
+  (e: 'approve', toolName: string, always: boolean): void;
+  (e: 'deny', toolName: string): void;
 }>();
 
 const expanded = ref(false);
@@ -101,6 +124,10 @@ const formattedResult = computed(() => {
   flex: 1;
 }
 
+.tool-use-block--pending {
+  border-color: rgba(251, 191, 36, 0.3);
+}
+
 .tool-status {
   display: flex;
   align-items: center;
@@ -115,6 +142,31 @@ const formattedResult = computed(() => {
   &.done {
     color: #4caf50;
   }
+
+  &.pending {
+    color: #fbbf24;
+  }
+
+  &.denied {
+    color: #ef4444;
+  }
+}
+
+.tool-approval {
+  padding: 10px 14px;
+  border-top: 1px solid rgba(251, 191, 36, 0.15);
+  background: rgba(251, 191, 36, 0.05);
+}
+
+.tool-approval-desc {
+  color: var(--ff-text-secondary, #a1a1aa);
+  font-size: 0.78rem;
+  margin-bottom: 8px;
+}
+
+.tool-approval-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .expand-icon {

@@ -3,7 +3,7 @@ import type { UIState } from '../types';
 
 export const useUIStore = defineStore('ui', {
   state: (): UIState => ({
-    sidebarOpen: true,
+    sidebarOpen: typeof window !== 'undefined' ? window.innerWidth >= 768 : true,
     detailsExpanded: false
   }),
 

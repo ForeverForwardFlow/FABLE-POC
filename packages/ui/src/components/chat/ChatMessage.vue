@@ -9,6 +9,8 @@
           v-for="tu in message.metadata.toolUses"
           :key="tu.toolId"
           :tool-use="tu"
+          @approve="(name, always) => chatStore.approveTool(name, always)"
+          @deny="(name) => chatStore.denyTool(name)"
         />
       </div>
       <ThinkingBlock
@@ -63,11 +65,14 @@
 import { computed } from 'vue';
 import { marked } from 'marked';
 import type { ChatMessage, Action } from 'src/types';
+import { useChatStore } from 'src/stores/chat-store';
 import ProgressBar from './ProgressBar.vue';
 import PhaseBadge from './PhaseBadge.vue';
 import ActionButton from './ActionButton.vue';
 import ToolUseBlock from './ToolUseBlock.vue';
 import ThinkingBlock from './ThinkingBlock.vue';
+
+const chatStore = useChatStore();
 
 // Configure marked for safe, compact output
 marked.setOptions({ breaks: true, gfm: true });

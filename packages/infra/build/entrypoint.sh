@@ -208,6 +208,10 @@ if [ -n "$ARTIFACTS_BUCKET" ] && [ -n "$STAGE" ]; then
     aws s3 cp "s3://${ARTIFACTS_BUCKET}/templates/CLAUDE.md.builder" \
         /fable/templates/CLAUDE.md.builder 2>/dev/null \
         || echo "No S3 template found, using baked-in version"
+    # Pull skills from S3 (new skill files override Docker-baked versions)
+    aws s3 sync "s3://${ARTIFACTS_BUCKET}/templates/skills/" \
+        /fable/templates/skills/ 2>/dev/null \
+        || echo "No S3 skills found, using baked-in versions"
 fi
 
 # Copy the CLAUDE.md template
@@ -223,6 +227,13 @@ case "$PHASE" in
         exit 1
         ;;
 esac
+
+# Copy skills to .claude/skills/ (Claude Code discovers these automatically)
+if [ -d /fable/templates/skills ]; then
+    mkdir -p .claude/skills
+    cp -r /fable/templates/skills/* .claude/skills/ 2>/dev/null || true
+    echo "Skills loaded: $(ls .claude/skills/ 2>/dev/null | tr '\n' ', ')"
+fi
 
 # Write the build spec to the work directory (so Claude can access it)
 echo "$BUILD_SPEC" > ./build-spec.json

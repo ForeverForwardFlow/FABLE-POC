@@ -41,9 +41,18 @@ const routes: RouteRecordRaw[] = [
         component: () => import('src/pages/SettingsPage.vue')
       },
       {
+        path: 'writing-analytics',
+        name: 'writing-analytics',
+        component: () => import('src/pages/WritingAnalyticsPage.vue')
+      },
+      {
         path: 'auth/callback',
         name: 'auth-callback',
         component: () => import('src/pages/AuthCallbackPage.vue')
+      },
+      {
+        path: 'chat',
+        redirect: { name: 'chat' }
       }
     ]
   }

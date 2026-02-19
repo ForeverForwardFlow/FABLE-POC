@@ -53,6 +53,7 @@ interface ChatEvent {
     reason: string;
   };
   requestId?: string;
+  approvedTools?: string[];
 }
 
 interface ContentBlock {
@@ -104,7 +105,8 @@ function sanitizeSchema(schema: Record<string, unknown>): Record<string, unknown
 }
 
 export const handler = async (event: ChatEvent): Promise<void> => {
-  const { connectionId, message, userId, orgId, context, intent, requestId } = event;
+  const { connectionId, message, userId, orgId, context, intent, requestId, approvedTools } = event;
+  const approvedSet = new Set(approvedTools || []);
 
   console.log(`Chat handler invoked for ${connectionId}, intent: ${intent.type}`);
 
@@ -125,14 +127,24 @@ export const handler = async (event: ChatEvent): Promise<void> => {
 
     // Convert tools to Bedrock format (external + internal workflow tools)
     // Sanitize schemas — Bedrock doesn't support oneOf/allOf/anyOf
-    const bedrockTools: BedrockTool[] = [
-      ...tools.map(t => ({
-        name: t.schema.name,
+    // Deduplicate by name — internal tools take priority over external ones
+    const internalNames = new Set(INTERNAL_WORKFLOW_TOOLS.map(t => t.name));
+    const seenNames = new Set<string>();
+    const externalTools: BedrockTool[] = [];
+    for (const t of tools) {
+      const name = t.schema.name;
+      if (internalNames.has(name) || seenNames.has(name)) {
+        console.warn(`Skipping duplicate/conflicting tool: ${name}`);
+        continue;
+      }
+      seenNames.add(name);
+      externalTools.push({
+        name,
         description: t.schema.description,
         input_schema: sanitizeSchema(t.schema.inputSchema || { type: 'object', properties: {} }) as BedrockTool['input_schema'],
-      })),
-      ...INTERNAL_WORKFLOW_TOOLS,
-    ];
+      });
+    }
+    const bedrockTools: BedrockTool[] = [...externalTools, ...INTERNAL_WORKFLOW_TOOLS];
 
     // Build messages array with conversation history
     const messages: Array<{ role: 'user' | 'assistant'; content: string | ContentBlock[] }> = [
@@ -227,12 +239,30 @@ export const handler = async (event: ChatEvent): Promise<void> => {
               // Internal tool — dispatch locally
               toolResult = await handleInternalTool(block.name, block.input || {}, orgId, userId, connectionId, context.conversationId);
             } else {
-              // External tool — invoke via Function URL
+              // External tool — check approval if approvedTools was provided
               const tool = tools.find(t => t.schema.name === block.name);
               if (!tool) {
                 throw new Error(`Tool ${block.name} not found`);
               }
-              toolResult = await invokeToolFunction(tool, block.input || {});
+
+              // If client sent an approvedTools list, enforce it for external tools
+              if (approvedTools && !approvedSet.has(block.name)) {
+                // Tool not approved — notify client and return denial to Bedrock
+                await sendToConnection(connectionId, {
+                  type: 'tool_approval_request',
+                  payload: {
+                    toolName: block.name,
+                    toolId: block.id,
+                    messageId: block.id,
+                    input: block.input,
+                    description: tool.schema.description,
+                  },
+                  requestId,
+                });
+                toolResult = { error: `Tool "${block.name}" requires user approval. The user has been prompted to approve this tool.` };
+              } else {
+                toolResult = await invokeToolFunction(tool, block.input || {});
+              }
             }
 
             toolResults.push({

@@ -1,0 +1,41 @@
+name: Tool Report
+
+on:
+  workflow_dispatch:
+
+jobs:
+  list-tools:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package.json ]; then
+            npm ci
+          fi
+
+      - name: Run Claude Sonnet with tool report prompt
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Install Claude Code if not available
+          if ! command -v claude &> /dev/null; then
+            npm install -g @anthropic-ai/claude-code
+          fi
+
+          # Run Claude with the specified prompt
+          echo "Running Claude Sonnet 4.5 to list available tools..."
+          claude -p "List all available tools and describe what each one does." \
+            --model sonnet \
+            --dangerously-skip-permissions || echo "Claude execution completed"
+
+      - name: Output results
+        run: |
+          echo "Tool report generation completed. Check the logs above for the list of available tools."

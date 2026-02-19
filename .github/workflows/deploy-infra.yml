@@ -1,0 +1,77 @@
+name: Deploy FABLE Infrastructure
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/infra/**'
+      - 'templates/**'
+      - 'packages/ui/**'
+      - '.github/workflows/deploy-infra.yml'
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: fable-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Install CDK dependencies
+        run: cd packages/infra && npm ci
+
+      - name: Write CDK config
+        run: |
+          cat > packages/infra/fable.config.ts << 'FABLECONFIG'
+          import type { FableConfig } from './lib/fable-config';
+          const config: FableConfig = {
+            stage: 'dev',
+            region: 'us-west-2',
+            githubSecretName: 'fable/dev/github-app',
+            toolsRepo: 'ForeverForwardFlow/FABLE-TOOLS',
+          };
+          export default config;
+          FABLECONFIG
+
+      - name: CDK Deploy
+        run: cd packages/infra && npx cdk deploy --require-approval never
+
+      - name: Sync builder template and skills to S3
+        run: |
+          BUCKET=$(aws cloudformation describe-stacks --stack-name fable-dev \
+            --query "Stacks[0].Outputs[?OutputKey=='ArtifactsBucketName'].OutputValue" \
+            --output text 2>/dev/null || echo "fable-artifacts-dev-767398133785")
+          aws s3 cp templates/CLAUDE.md.builder "s3://${BUCKET}/templates/CLAUDE.md.builder"
+          aws s3 sync templates/skills/ "s3://${BUCKET}/templates/skills/" --delete
+
+      - name: Build and deploy frontend
+        run: |
+          cd packages/ui
+          npm ci
+          npx quasar build
+          BUCKET=$(aws cloudformation describe-stacks --stack-name fable-dev \
+            --query "Stacks[0].Outputs[?OutputKey=='FrontendBucketName'].OutputValue" \
+            --output text 2>/dev/null || echo "fable-ui-dev-767398133785")
+          DIST_ID=$(aws cloudformation describe-stacks --stack-name fable-dev \
+            --query "Stacks[0].Outputs[?OutputKey=='CloudFrontDistributionId'].OutputValue" \
+            --output text 2>/dev/null || echo "E33LR2SJ426997")
+          aws s3 sync dist/spa/ "s3://${BUCKET}" --delete
+          aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"

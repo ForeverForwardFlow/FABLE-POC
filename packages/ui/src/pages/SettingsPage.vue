@@ -97,6 +97,54 @@
       </div>
     </section>
 
+    <!-- Tool Approval Section -->
+    <section class="settings-section">
+      <h2 class="settings-section__title">
+        <q-icon name="shield" size="20px" class="q-mr-sm" />
+        Tool Approval
+      </h2>
+      <div class="settings-card">
+        <p class="settings-card__description">
+          When enabled, FABLE will ask for your approval before using external tools during conversations.
+        </p>
+        <div class="profile-row">
+          <span class="profile-row__label">Require tool approval</span>
+          <span class="profile-row__value">
+            <q-toggle
+              :model-value="chatStore.requireToolApproval"
+              @update:model-value="chatStore.setRequireToolApproval($event)"
+              color="purple"
+              dense
+            />
+          </span>
+        </div>
+
+        <template v-if="chatStore.alwaysApprovedTools.length > 0">
+          <q-separator dark class="q-my-sm" />
+          <div class="tool-section-label">Always allowed tools</div>
+          <q-list dense class="approved-tools-list">
+            <q-item v-for="tool in chatStore.alwaysApprovedTools" :key="tool" class="approved-tool-item">
+              <q-item-section avatar>
+                <q-icon name="verified" color="positive" size="18px" />
+              </q-item-section>
+              <q-item-section>
+                <q-item-label class="approved-tool-name">{{ tool }}</q-item-label>
+              </q-item-section>
+              <q-item-section side>
+                <q-btn
+                  flat dense round
+                  icon="close"
+                  size="sm"
+                  color="grey-6"
+                  @click="chatStore.removeAlwaysApproved(tool)"
+                />
+              </q-item-section>
+            </q-item>
+          </q-list>
+        </template>
+      </div>
+    </section>
+
     <!-- Display Section -->
     <section class="settings-section">
       <h2 class="settings-section__title">
@@ -146,11 +194,13 @@
 import { ref, reactive, onMounted, onUnmounted, watch } from 'vue';
 import { useQuasar } from 'quasar';
 import { useAuthStore } from 'src/stores/auth-store';
+import { useChatStore } from 'src/stores/chat-store';
 import { fableWs } from 'src/boot/websocket';
 import type { WsIncomingMessage, MemoryRecord } from 'src/types';
 
 const $q = useQuasar();
 const authStore = useAuthStore();
+const chatStore = useChatStore();
 
 const MCP_API = import.meta.env.VITE_MCP_API_URL || 'https://25d5630rjb.execute-api.us-west-2.amazonaws.com';
 
@@ -387,5 +437,20 @@ onUnmounted(() => {
   &:hover .memory-item__delete {
     opacity: 1;
   }
+}
+
+.tool-section-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ff-text-muted);
+  margin-bottom: 4px;
+}
+
+.approved-tool-name {
+  font-size: 13px;
+  color: var(--ff-text-primary);
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
 }
 </style>

@@ -32,7 +32,6 @@
 import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { useChatStore } from 'src/stores/chat-store';
-import { useConversationsStore } from 'src/stores/conversations-store';
 import { fableWs } from 'src/boot/websocket';
 import ChatMessage from 'src/components/chat/ChatMessage.vue';
 import ChatInput from 'src/components/chat/ChatInput.vue';
@@ -42,7 +41,6 @@ import type { Action, WsIncomingMessage } from 'src/types';
 const router = useRouter();
 const route = useRoute();
 const chatStore = useChatStore();
-const conversationsStore = useConversationsStore();
 const messagesRef = ref<HTMLElement>();
 
 // Wire WebSocket messages to chat store and conversations store
@@ -56,24 +54,14 @@ function initAfterConnect() {
   } else {
     chatStore.restoreFromLocalStorage();
   }
-
-  // Fetch conversation list for sidebar
-  conversationsStore.fetchConversations();
 }
 
 let unwatchConnected: (() => void) | null = null;
 
 onMounted(() => {
   unsubscribe = fableWs.onMessage((msg: WsIncomingMessage) => {
-    // Route conversation management messages to conversations store
-    if (msg.type === 'conversations_list') {
-      conversationsStore.handleConversationsList(msg.payload.conversations);
-      return;
-    }
-    if (msg.type === 'conversation_deleted') {
-      conversationsStore.handleConversationDeleted(msg.payload.conversationId);
-      return;
-    }
+    // Conversation list/delete messages are handled by MainLayout
+    if (msg.type === 'conversations_list' || msg.type === 'conversation_deleted') return;
     // Everything else goes to chat store
     chatStore.handleWsMessage(msg);
   });

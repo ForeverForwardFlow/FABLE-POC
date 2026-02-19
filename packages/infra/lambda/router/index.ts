@@ -36,6 +36,7 @@ interface ClientMessage {
     content?: string;
     conversationId?: string;
     memoryId?: string;
+    approvedTools?: string[];
   };
   requestId?: string;
 }
@@ -113,6 +114,7 @@ export const handler: APIGatewayProxyHandler = async (event): Promise<APIGateway
             context,
             intent,
             requestId: message.requestId,
+            approvedTools: message.payload?.approvedTools,
           });
           break;
       }
@@ -421,8 +423,8 @@ async function listBuilds(orgId: string) {
       ':pk': `ORG#${orgId}`,
       ':sk': 'BUILD#',
     },
-    ProjectionExpression: 'buildId, #s, request, createdAt, updatedAt, completedAt, buildCycle, userId',
-    ExpressionAttributeNames: { '#s': 'status' },
+    ProjectionExpression: 'buildId, #s, #r, createdAt, updatedAt, completedAt, buildCycle, userId',
+    ExpressionAttributeNames: { '#s': 'status', '#r': 'request' },
     ScanIndexForward: false,
   }));
 

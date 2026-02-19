@@ -3,9 +3,18 @@ import { fableWs } from '../boot/websocket';
 import type { ChatMessage, ChatState, LogEntry, WsIncomingMessage } from '../types';
 
 const CONV_ID_KEY = 'fable_conversationId';
+const TOOL_APPROVAL_KEY = 'fable_requireToolApproval';
+const ALWAYS_APPROVED_KEY = 'fable_alwaysApprovedTools';
 
 export const useChatStore = defineStore('chat', {
-  state: (): ChatState & { isStreaming: boolean; streamTick: number } => ({
+  state: (): ChatState & {
+    isStreaming: boolean;
+    streamTick: number;
+    requireToolApproval: boolean;
+    sessionApprovedTools: string[];
+    alwaysApprovedTools: string[];
+    lastUserMessage: string | null;
+  } => ({
     messages: [],
     isBuilding: false,
     currentBuildId: null,
@@ -13,6 +22,10 @@ export const useChatStore = defineStore('chat', {
     logs: [],
     isStreaming: false,
     streamTick: 0,
+    requireToolApproval: localStorage.getItem(TOOL_APPROVAL_KEY) === 'true',
+    sessionApprovedTools: [],
+    alwaysApprovedTools: JSON.parse(localStorage.getItem(ALWAYS_APPROVED_KEY) || '[]'),
+    lastUserMessage: null,
   }),
 
   getters: {
@@ -31,6 +44,7 @@ export const useChatStore = defineStore('chat', {
 
   actions: {
     sendMessage(content: string): void {
+      this.lastUserMessage = content;
       const message: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'user',
@@ -49,14 +63,18 @@ export const useChatStore = defineStore('chat', {
         metadata: { isStreaming: true },
       });
 
-      // Send via WebSocket
-      fableWs.send({
-        type: 'message',
-        payload: {
-          content: content.trim(),
-          ...(this.conversationId ? { conversationId: this.conversationId } : {}),
-        },
-      });
+      // Build payload with approved tools list (only when approval feature is enabled)
+      const payload: Record<string, unknown> = {
+        content: content.trim(),
+        ...(this.conversationId ? { conversationId: this.conversationId } : {}),
+      };
+
+      if (this.requireToolApproval) {
+        const approved = [...new Set([...this.sessionApprovedTools, ...this.alwaysApprovedTools])];
+        payload.approvedTools = approved;
+      }
+
+      fableWs.send({ type: 'message', payload });
     },
 
     handleWsMessage(msg: WsIncomingMessage): void {
@@ -148,29 +166,54 @@ export const useChatStore = defineStore('chat', {
         case 'build_completed': {
           this.isBuilding = false;
           const tools = msg.payload.tools || [];
-          const toolNames = tools.map(t => t.toolName).join(', ');
-          this.messages.push({
-            id: crypto.randomUUID(),
-            role: 'fable',
-            content: `Your ${toolNames} tool is ready!`,
-            timestamp: new Date().toISOString(),
-            metadata: {
-              status: 'complete',
-              progress: 100,
-              checkmarks: ['Build complete', 'Deployed'],
-              actions: tools.map(t => ({
-                label: `Try ${t.toolName}`,
-                type: 'primary' as const,
-                action: `navigate:/tools/${t.toolName}`,
-              })),
-            },
-          });
-          this.addLog({
-            id: crypto.randomUUID(),
-            timestamp: new Date().toISOString(),
-            level: 'info',
-            message: `Build completed: ${toolNames}`,
-          });
+          const fixType = (msg.payload as Record<string, unknown>).fixType as string | undefined;
+
+          if (fixType) {
+            // Fix build (frontend or infrastructure)
+            const fixMessage = (msg.payload as Record<string, unknown>).message as string || 'Fix deployed!';
+            this.messages.push({
+              id: crypto.randomUUID(),
+              role: 'fable',
+              content: fixMessage,
+              timestamp: new Date().toISOString(),
+              metadata: {
+                status: 'complete',
+                progress: 100,
+                checkmarks: [`${fixType === 'frontend' ? 'Frontend' : 'Infrastructure'} fix deployed`],
+              },
+            });
+            this.addLog({
+              id: crypto.randomUUID(),
+              timestamp: new Date().toISOString(),
+              level: 'info',
+              message: `Fix build completed: ${fixMessage}`,
+            });
+          } else {
+            // Tool build
+            const toolNames = tools.map(t => t.toolName).join(', ');
+            this.messages.push({
+              id: crypto.randomUUID(),
+              role: 'fable',
+              content: `Your ${toolNames} tool is ready!`,
+              timestamp: new Date().toISOString(),
+              metadata: {
+                status: 'complete',
+                progress: 100,
+                checkmarks: ['Build complete', 'Deployed'],
+                actions: tools.map(t => ({
+                  label: `Try ${t.toolName}`,
+                  type: 'primary' as const,
+                  action: `navigate:/tools/${t.toolName}`,
+                })),
+              },
+            });
+            this.addLog({
+              id: crypto.randomUUID(),
+              timestamp: new Date().toISOString(),
+              level: 'info',
+              message: `Build completed: ${toolNames}`,
+            });
+          }
           break;
         }
 
@@ -258,6 +301,19 @@ export const useChatStore = defineStore('chat', {
           break;
         }
 
+        case 'tool_approval_request': {
+          // Mark the tool_use as pending approval
+          for (const m of this.messages) {
+            const tu = m.metadata?.toolUses?.find(t => t.toolId === msg.payload.toolId);
+            if (tu) {
+              tu.approvalStatus = 'pending';
+              tu.description = msg.payload.description;
+              break;
+            }
+          }
+          break;
+        }
+
         case 'conversation_loaded': {
           // Replace current chat with loaded conversation
           this.conversationId = msg.payload.conversationId;
@@ -333,12 +389,76 @@ export const useChatStore = defineStore('chat', {
       this.logs = [];
     },
 
+    approveTool(toolName: string, always: boolean): void {
+      // Add to session approved list
+      if (!this.sessionApprovedTools.includes(toolName)) {
+        this.sessionApprovedTools.push(toolName);
+      }
+      // Persist if "Always Allow"
+      if (always && !this.alwaysApprovedTools.includes(toolName)) {
+        this.alwaysApprovedTools.push(toolName);
+        localStorage.setItem(ALWAYS_APPROVED_KEY, JSON.stringify(this.alwaysApprovedTools));
+      }
+      // Mark tool_use as approved in messages
+      for (const m of this.messages) {
+        const tu = m.metadata?.toolUses?.find(t => t.toolName === toolName && t.approvalStatus === 'pending');
+        if (tu) tu.approvalStatus = 'approved';
+      }
+      // Auto-retry the last user message with updated approved list
+      if (this.lastUserMessage) {
+        this.retryWithApproval(this.lastUserMessage);
+      }
+    },
+
+    denyTool(toolName: string): void {
+      // Mark tool_use as denied in messages
+      for (const m of this.messages) {
+        const tu = m.metadata?.toolUses?.find(t => t.toolName === toolName && t.approvalStatus === 'pending');
+        if (tu) tu.approvalStatus = 'denied';
+      }
+    },
+
+    retryWithApproval(content: string): void {
+      // Re-send the message with updated approved tools (no duplicate user message shown)
+      this.isStreaming = true;
+      this.messages.push({
+        id: 'pending-response',
+        role: 'fable',
+        content: '',
+        timestamp: new Date().toISOString(),
+        metadata: { isStreaming: true },
+      });
+
+      const payload: Record<string, unknown> = {
+        content: content.trim(),
+        ...(this.conversationId ? { conversationId: this.conversationId } : {}),
+      };
+      if (this.requireToolApproval) {
+        const approved = [...new Set([...this.sessionApprovedTools, ...this.alwaysApprovedTools])];
+        payload.approvedTools = approved;
+      }
+
+      fableWs.send({ type: 'message', payload });
+    },
+
+    setRequireToolApproval(value: boolean): void {
+      this.requireToolApproval = value;
+      localStorage.setItem(TOOL_APPROVAL_KEY, String(value));
+    },
+
+    removeAlwaysApproved(toolName: string): void {
+      this.alwaysApprovedTools = this.alwaysApprovedTools.filter(t => t !== toolName);
+      localStorage.setItem(ALWAYS_APPROVED_KEY, JSON.stringify(this.alwaysApprovedTools));
+    },
+
     clearChat(): void {
       this.messages = [];
       this.isBuilding = false;
       this.currentBuildId = null;
       this.conversationId = null;
       this.logs = [];
+      this.sessionApprovedTools = [];
+      this.lastUserMessage = null;
       localStorage.removeItem(CONV_ID_KEY);
     },
 

@@ -1,0 +1,86 @@
+name: Deploy Tool
+on:
+  push:
+    branches: [main]
+    paths: ['tools/**']
+  workflow_dispatch:
+    inputs:
+      tool_name:
+        description: 'Tool to deploy (leave empty for auto-detect)'
+        required: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      tools: ${{ steps.changes.outputs.tools }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: changes
+        run: |
+          if [ -n "${{ github.event.inputs.tool_name }}" ]; then
+            echo "tools=[\"${{ github.event.inputs.tool_name }}\"]" >> $GITHUB_OUTPUT
+          else
+            CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | grep '^tools/' | cut -d'/' -f2 | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))' || echo '[]')
+            echo "tools=$CHANGED" >> $GITHUB_OUTPUT
+          fi
+
+  deploy:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.tools != '[]' && needs.detect-changes.outputs.tools != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: ${{ fromJson(needs.detect-changes.outputs.tools) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          cd tools/${{ matrix.tool }}
+          npm ci
+
+      - name: Run tests
+        run: |
+          cd tools/${{ matrix.tool }}
+          npm test
+
+      - name: Build
+        run: |
+          cd tools/${{ matrix.tool }}
+          npx esbuild src/index.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/index.js
+          cd dist && zip -r ../tool.zip index.js
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Upload to S3 and Deploy
+        run: |
+          TOOL="${{ matrix.tool }}"
+          COMMIT="${{ github.sha }}"
+
+          aws s3 cp tools/$TOOL/tool.zip s3://${{ secrets.ARTIFACTS_BUCKET }}/tools/$TOOL/$COMMIT.zip
+
+          SCHEMA=$(cat tools/$TOOL/tool.json)
+
+          aws lambda invoke \
+            --function-name fable-dev-tool-deployer \
+            --cli-binary-format raw-in-base64-out \
+            --payload "{\"action\":\"deploy\",\"payload\":{\"toolName\":\"$TOOL\",\"s3Key\":\"tools/$TOOL/$COMMIT.zip\",\"schema\":$SCHEMA,\"gitCommit\":\"$COMMIT\",\"gitRepo\":\"${{ github.repository }}\"}}" \
+            response.json
+
+          cat response.json

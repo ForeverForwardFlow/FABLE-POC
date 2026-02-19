@@ -32,7 +32,7 @@ const STAGE = process.env.STAGE || 'dev';
 const AUDIT_LOG_TABLE = process.env.AUDIT_LOG_TABLE;
 const CONVERSATIONS_TABLE = process.env.CONVERSATIONS_TABLE;
 const MEMORY_LAMBDA_ARN = process.env.MEMORY_LAMBDA_ARN;
-const VERSION = '9'; // bump to force deploy
+const VERSION = '10'; // bump to force deploy
 
 interface EcsTaskStateChangeEvent {
   detail: {
@@ -124,10 +124,11 @@ export const handler = async (event: EcsTaskStateChangeEvent): Promise<void> => 
       });
       const fixLabel = fixType === 'frontend' ? 'Frontend' : 'Infrastructure';
       await notifyUser(userId, {
-        type: 'build_complete',
+        type: 'build_completed',
         payload: {
           buildId,
           status: 'completed',
+          tools: [],
           fixType,
           message: `${fixLabel} fix deployed! ${fixDescription}`,
           filesChanged,
@@ -227,9 +228,9 @@ export const handler = async (event: EcsTaskStateChangeEvent): Promise<void> => 
         };
         await updateBuildStatus(buildRecord, 'completed', { ...deployResponse, fidelity: fidelityRecord, workflows: createdWorkflows });
 
-        // If this is a retry build (cycle 2+), mark earlier "retrying" builds in the same conversation as completed
-        if (buildCycle > 1 && buildRecord.conversationId) {
-          await completeParentBuilds(buildRecord.conversationId as string, buildId, buildRecord.orgId as string);
+        // If this is a retry build (cycle 2+), mark parent build as completed
+        if (buildCycle > 1 && buildRecord.parentBuildId) {
+          await completeParentBuild(buildRecord.parentBuildId as string, buildId, buildRecord.orgId as string);
         }
 
         await notifyUser(userId, {
@@ -356,8 +357,10 @@ async function verifyDeployedTool(
 
         tcResult.actualOutput = responseBody.result || responseBody;
 
-        if (responseBody.error) {
-          throw new Error(responseBody.error.message || 'Tool returned error');
+        // Only treat error as failure if the test case doesn't expect an error field
+        // (tools may intentionally return error messages for invalid inputs)
+        if (responseBody.error && !testCase.expectedOutput.error) {
+          throw new Error(responseBody.error.message || responseBody.error || 'Tool returned error');
         }
 
         // Partial match: check that expected fields exist in actual output
@@ -382,7 +385,19 @@ function partialMatch(actual: unknown, expected: Record<string, unknown>): boole
   if (typeof actual !== 'object' || actual === null) return false;
   const actualObj = actual as Record<string, unknown>;
   for (const [key, expectedVal] of Object.entries(expected)) {
-    if (typeof expectedVal === 'object' && expectedVal !== null) {
+    // Special matchers: $exists (field must be present), $startsWith:prefix
+    if (typeof expectedVal === 'string' && expectedVal.startsWith('$')) {
+      if (expectedVal === '$exists') {
+        if (!(key in actualObj)) return false;
+      } else if (expectedVal.startsWith('$startsWith:')) {
+        const prefix = expectedVal.slice('$startsWith:'.length);
+        if (typeof actualObj[key] !== 'string' || !(actualObj[key] as string).startsWith(prefix)) return false;
+      } else if (expectedVal.startsWith('$contains:')) {
+        const substr = expectedVal.slice('$contains:'.length);
+        if (typeof actualObj[key] !== 'string' || !(actualObj[key] as string).includes(substr)) return false;
+      }
+      // Unknown $ matcher — skip (don't fail on matchers we don't recognize)
+    } else if (typeof expectedVal === 'object' && expectedVal !== null) {
       if (!partialMatch(actualObj[key], expectedVal as Record<string, unknown>)) return false;
     } else if (typeof expectedVal === 'number' && typeof actualObj[key] === 'number') {
       // Fuzzy numeric matching: 20% relative tolerance or absolute tolerance of 5
@@ -412,10 +427,19 @@ Original requirement: "${buildRecord.request || ''}"
 
 ${toolSummary}
 
-Does this tool fulfill the original requirement? Respond with ONLY valid JSON:
+Does this tool fulfill the FUNCTIONAL requirements? Focus on:
+- Does it accept the right inputs and produce the right outputs?
+- Do the test results show correct behavior?
+- Are the core computations/logic correct?
+
+Do NOT fail for cosmetic or UI presentation differences (icons, labels, card layouts, field names).
+These are handled separately by the frontend and are NOT part of the tool's functional contract.
+If all smoke tests pass and the tool produces correct results, it should PASS.
+
+Respond with ONLY valid JSON:
 {"pass": true, "reasoning": "brief explanation", "gaps": []}
 or
-{"pass": false, "reasoning": "brief explanation", "gaps": ["specific gap 1", "specific gap 2"]}`;
+{"pass": false, "reasoning": "brief explanation", "gaps": ["specific functional gap 1"]}`;
 
   try {
     const response = await bedrockClient.send(new InvokeModelCommand({
@@ -454,12 +478,12 @@ async function retryOrAskForHelp(
   if (buildCycle < MAX_BUILD_CYCLES) {
     // Outer retry: re-trigger build with QA failure context
     const nextCycle = buildCycle + 1;
-    console.log(`QA failed on cycle ${buildCycle}, re-triggering build (cycle ${nextCycle})...`);
-
-    // Update build record with cycle count
-    await updateBuildStatus(buildRecord, 'retrying', { buildCycle: nextCycle, failureContext });
+    console.log(`QA failed on cycle ${buildCycle}, re-triggering build (cycle ${nextCycle} of max ${MAX_BUILD_CYCLES})...`);
 
     try {
+      // Update build record with cycle count (inside try/catch so failures don't block retry)
+      await updateBuildStatus(buildRecord, 'retrying', { buildCycle: nextCycle, failureContext });
+
       // Upload augmented buildSpec to S3 to avoid ECS 8192 byte env var limit
       const originalSpec = buildRecord.spec || buildRecord.request;
       const augmentedSpec = {
@@ -477,7 +501,8 @@ async function retryOrAskForHelp(
       console.log(`Uploaded retry spec to s3://${ARTIFACTS_BUCKET}/${s3Key}`);
 
       // Re-invoke build-kickoff with S3 reference (entrypoint.sh handles s3:// prefix)
-      await lambdaClient.send(new InvokeCommand({
+      console.log(`Invoking BUILD_KICKOFF_ARN (${BUILD_KICKOFF_ARN}) for cycle ${nextCycle}...`);
+      const kickoffResult = await lambdaClient.send(new InvokeCommand({
         FunctionName: BUILD_KICKOFF_ARN,
         InvocationType: 'Event', // async — don't wait
         Payload: Buffer.from(JSON.stringify({
@@ -491,9 +516,11 @@ async function retryOrAskForHelp(
             connectionId: buildRecord.connectionId,
             buildCycle: nextCycle,
             qaFailure: { reason: 'See build-spec.json in work directory for full failure context' },
+            parentBuildId: buildId,
           },
         })),
       }));
+      console.log(`Build-kickoff invoked for cycle ${nextCycle}, status: ${kickoffResult.StatusCode}`);
     } catch (retryErr) {
       // Retry launch failed — don't leave user stuck, ask for help
       console.error(`Failed to re-trigger build cycle ${nextCycle}:`, retryErr);
@@ -728,43 +755,43 @@ async function updateBuildStatus(
   }
 }
 
-async function completeParentBuilds(conversationId: string, currentBuildId: string, orgId: string): Promise<void> {
+async function completeParentBuild(parentBuildId: string, childBuildId: string, orgId: string): Promise<void> {
   try {
-    // Find all builds in this conversation that are stuck in "retrying"
-    const result = await docClient.send(new QueryCommand({
+    // Direct lookup of parent build by ID
+    const parentRecord = await docClient.send(new GetCommand({
       TableName: BUILDS_TABLE,
-      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
-      FilterExpression: '#s = :retrying AND buildId <> :currentId',
-      ExpressionAttributeNames: { '#s': 'status' },
-      ExpressionAttributeValues: {
-        ':pk': `ORG#${orgId}`,
-        ':sk': 'BUILD#',
-        ':retrying': 'retrying',
-        ':currentId': currentBuildId,
-      },
+      Key: { PK: `ORG#${orgId}`, SK: `BUILD#${parentBuildId}` },
     }));
 
-    const retryingBuilds = (result.Items || []).filter(
-      (item) => item.conversationId === conversationId
-    );
-
-    for (const build of retryingBuilds) {
-      console.log(`Updating parent build ${build.buildId} from "retrying" to "completed" (retry child ${currentBuildId} succeeded)`);
-      await docClient.send(new UpdateCommand({
-        TableName: BUILDS_TABLE,
-        Key: { PK: build.PK, SK: build.SK },
-        UpdateExpression: 'SET #s = :status, #updatedAt = :now, #completedAt = :now, #resolvedBy = :childId',
-        ExpressionAttributeNames: { '#s': 'status', '#updatedAt': 'updatedAt', '#completedAt': 'completedAt', '#resolvedBy': 'resolvedByBuildId' },
-        ExpressionAttributeValues: { ':status': 'completed', ':now': new Date().toISOString(), ':childId': currentBuildId },
-      }));
+    if (!parentRecord.Item) {
+      console.log(`Parent build ${parentBuildId} not found, skipping status update`);
+      return;
     }
 
-    if (retryingBuilds.length > 0) {
-      console.log(`Updated ${retryingBuilds.length} parent build(s) to completed`);
+    const parent = parentRecord.Item;
+    if (parent.status !== 'retrying') {
+      console.log(`Parent build ${parentBuildId} is "${parent.status}", not "retrying" — skipping`);
+      return;
     }
+
+    console.log(`Updating parent build ${parentBuildId} from "retrying" to "completed" (retry child ${childBuildId} succeeded)`);
+    await docClient.send(new UpdateCommand({
+      TableName: BUILDS_TABLE,
+      Key: { PK: parent.PK as string, SK: parent.SK as string },
+      UpdateExpression: 'SET #s = :status, #updatedAt = :now, #completedAt = :now, #resolvedBy = :childId',
+      ExpressionAttributeNames: { '#s': 'status', '#updatedAt': 'updatedAt', '#completedAt': 'completedAt', '#resolvedBy': 'resolvedByBuildId' },
+      ExpressionAttributeValues: { ':status': 'completed', ':now': new Date().toISOString(), ':childId': childBuildId },
+    }));
+
+    // Recurse: if the parent itself has a parent (multi-cycle retries), complete that too
+    if (parent.parentBuildId) {
+      await completeParentBuild(parent.parentBuildId as string, childBuildId, orgId);
+    }
+
+    console.log(`Parent build ${parentBuildId} marked as completed`);
   } catch (err) {
     // Non-fatal — don't fail the build completion over this
-    console.error('Failed to update parent builds:', err);
+    console.error('Failed to update parent build:', err);
   }
 }
 

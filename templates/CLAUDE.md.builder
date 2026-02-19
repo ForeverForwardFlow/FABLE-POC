@@ -11,8 +11,20 @@ Your inputs are in `build-spec.json` in the current directory.
    - memory_search("FABLE tool architecture and file structure")
    - memory_search("build and deployment patterns")
    - memory_search("common build gotchas")
+   - memory_search("pipeline bugs to fix proactively")
    - memory_search(queries specific to this build)
-5. Clone the tools repo and look at existing tools for concrete examples
+5. **Fix any known pipeline bugs FIRST** — if memory returns known bugs in pipeline Lambdas with fix instructions, use the `infrastructure-fixer` skill pattern to clone the repo and push TypeScript fixes. CI/CD deploys automatically.
+6. Clone the tools repo and look at existing tools for concrete examples
+
+## Skills
+
+You have specialized skills in `.claude/skills/`. They load automatically based on the build type. Each skill contains detailed patterns and instructions for its domain:
+
+- **mcp-tool-builder** — Lambda tool development, uiDefinition, test design, packaging
+- **api-integration-builder** — Tools that connect to external APIs (HTTP, retries, API keys)
+- **multi-tool-builder** — Packages of related tools (CRUD sets, analyzer suites)
+- **frontend-modifier** — Vue/Quasar frontend changes, component patterns, CI/CD deployment
+- **infrastructure-fixer** — Lambda bug fixes via Git-based self-modification
 
 ## Build Until It Works
 Implement, write tests, run tests, fix, repeat. Do not stop until all tests pass
@@ -43,14 +55,21 @@ from parallelization.
         "input": { "text": "hello world" },
         "expectedOutput": { "wordCount": 2 },
         "description": "Simple two-word input"
-      },
-      {
-        "input": { "text": "" },
-        "expectedOutput": { "wordCount": 0 },
-        "description": "Empty string edge case"
       }
-    ]
+    ],
+    "uiDefinition": { "see mcp-tool-builder skill for full schema" }
   }],
+  "workflows": [
+    {
+      "name": "Daily Report",
+      "description": "Runs analysis daily and reports results",
+      "prompt": "Use my-tool to analyze the latest data and summarize the results",
+      "tools": ["my-tool"],
+      "trigger": { "type": "cron", "schedule": "0 9 * * ? *", "timezone": "America/Los_Angeles" },
+      "model": "haiku",
+      "maxTurns": 10
+    }
+  ],
   "deployment": {
     "method": "s3",
     "repo": "ForeverForwardFlow/FABLE-TOOLS",
@@ -73,9 +92,24 @@ Each test case needs:
 Include 2-3 test cases per tool: one happy path, one edge case, one that exercises
 the primary feature.
 
-## Infrastructure
+## Skill Evolution
 
-You have `mcp__infra__*` tools for reading logs, testing Lambdas, and fixing infrastructure. Search memory for diagnostic procedures when builds fail.
+After completing a build, consider whether you used a novel pattern not covered by existing skills. If so, create a new skill:
+
+1. Write a `SKILL.md` file following the format in `.claude/skills/mcp-tool-builder/SKILL.md` (YAML frontmatter + markdown body)
+2. Save it to `templates/skills/<skill-name>/SKILL.md` in the FABLE-TOOLS repo
+3. Include it in your Git push — CI/CD will sync it to S3, making it available for future builds
+
+**When to create a skill:**
+- You built a tool type not covered by existing skills (e.g., a data pipeline, a scraper, a tool using DynamoDB directly)
+- You discovered a reusable pattern that would help future builds of similar tools
+- You solved a complex problem with a generalizable approach
+
+**When NOT to create a skill:**
+- The build was straightforward and covered by existing skills
+- The pattern is too specific to this one tool to be reusable
+
+Keep skills focused (one concept per skill) and under 200 lines. Include concrete code examples, not abstract descriptions.
 
 ## On Failure
 

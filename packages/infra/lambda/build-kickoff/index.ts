@@ -1,6 +1,6 @@
 import { ECSClient, RunTaskCommand } from '@aws-sdk/client-ecs';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { randomUUID } from 'crypto';
 
 const ecsClient = new ECSClient({});
@@ -33,6 +33,8 @@ interface BuildRequest {
   buildCycle?: number;
   // QA failure context from previous cycle (if retrying)
   qaFailure?: Record<string, unknown>;
+  // Parent build ID when this is a retry (for status propagation)
+  parentBuildId?: string;
 }
 
 interface BuildKickoffEvent {
@@ -70,6 +72,7 @@ async function startBuild(request: BuildRequest): Promise<{ statusCode: number; 
     connectionId,
     buildCycle = 1,
     qaFailure,
+    parentBuildId,
   } = request;
 
   console.log(`Starting build: ${buildId} (cycle ${buildCycle})`);
@@ -102,9 +105,12 @@ async function startBuild(request: BuildRequest): Promise<{ statusCode: number; 
   if (conversationId) item.conversationId = conversationId;
   if (connectionId) item.connectionId = connectionId;
   if (buildCycle > 1) item.buildCycle = buildCycle;
+  if (parentBuildId) item.parentBuildId = parentBuildId;
 
   // Check concurrent build limit before recording
-  const activeBuilds = await docClient.send(new QueryCommand({
+  // Also auto-expire builds older than 30 minutes (stale pending/retrying)
+  const STALE_THRESHOLD_MS = 30 * 60 * 1000;
+  const activeBuildsResult = await docClient.send(new QueryCommand({
     TableName: BUILDS_TABLE,
     KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
     FilterExpression: '#s IN (:pending, :retrying)',
@@ -115,18 +121,39 @@ async function startBuild(request: BuildRequest): Promise<{ statusCode: number; 
       ':pending': 'pending',
       ':retrying': 'retrying',
     },
-    Select: 'COUNT',
+    ProjectionExpression: 'PK, SK, createdAt, #s',
   }));
 
-  if ((activeBuilds.Count || 0) >= MAX_CONCURRENT_BUILDS) {
-    console.log(`Concurrency limit hit: ${activeBuilds.Count} active builds for org ${orgId} (limit: ${MAX_CONCURRENT_BUILDS})`);
+  const activeBuildItems = activeBuildsResult.Items || [];
+  const cutoff = new Date(Date.now() - STALE_THRESHOLD_MS).toISOString();
+  const staleBuilds = activeBuildItems.filter(b => (b.createdAt as string) < cutoff);
+  // Only count "pending" builds toward concurrency — "retrying" parents are waiting
+  // for their child builds and don't consume ECS resources
+  const freshBuilds = activeBuildItems.filter(b => (b.createdAt as string) >= cutoff && b.status === 'pending');
+
+  // Auto-expire stale builds in background (don't await — fire and forget)
+  if (staleBuilds.length > 0) {
+    console.log(`Auto-expiring ${staleBuilds.length} stale builds older than 30 min`);
+    Promise.all(staleBuilds.map(b =>
+      docClient.send(new UpdateCommand({
+        TableName: BUILDS_TABLE,
+        Key: { PK: b.PK, SK: b.SK },
+        UpdateExpression: 'SET #s = :s, updatedAt = :now',
+        ExpressionAttributeNames: { '#s': 'status' },
+        ExpressionAttributeValues: { ':s': 'failed', ':now': new Date().toISOString() },
+      }))
+    )).catch(err => console.error('Failed to expire stale builds:', err));
+  }
+
+  if (freshBuilds.length >= MAX_CONCURRENT_BUILDS) {
+    console.log(`Concurrency limit hit: ${freshBuilds.length} active builds for org ${orgId} (limit: ${MAX_CONCURRENT_BUILDS})`);
     return {
       statusCode: 429,
       body: JSON.stringify({
         error: 'Too many concurrent builds',
-        activeBuilds: activeBuilds.Count,
+        activeBuilds: freshBuilds.length,
         limit: MAX_CONCURRENT_BUILDS,
-        message: `You have ${activeBuilds.Count} builds running. Please wait for one to finish before starting another.`,
+        message: `You have ${freshBuilds.length} builds running. Please wait for one to finish before starting another.`,
       }),
     };
   }

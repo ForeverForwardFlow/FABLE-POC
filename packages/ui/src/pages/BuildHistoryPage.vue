@@ -30,6 +30,13 @@
       <q-spinner-dots size="40px" color="purple" />
     </div>
 
+    <!-- Error State -->
+    <div v-else-if="buildsStore.error" class="builds-page__empty">
+      <q-icon name="error_outline" size="48px" color="negative" />
+      <p>Failed to load builds</p>
+      <q-btn flat no-caps color="purple" label="Retry" icon="refresh" @click="buildsStore.fetchBuilds()" />
+    </div>
+
     <!-- Empty State -->
     <div v-else-if="buildsStore.builds.length === 0" class="builds-page__empty">
       <q-icon name="construction" size="48px" color="grey-7" />
@@ -131,6 +138,9 @@ onMounted(() => {
   unsubscribe = fableWs.onMessage((msg: WsIncomingMessage) => {
     if (msg.type === 'builds_list') {
       buildsStore.handleBuildsList(msg.payload.builds);
+    }
+    if (msg.type === 'error' && buildsStore.loading) {
+      buildsStore.handleError(msg.message || 'Failed to load builds');
     }
   });
 
