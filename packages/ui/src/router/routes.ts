@@ -36,6 +36,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('src/pages/BuildHistoryPage.vue')
       },
       {
+        path: 'builds/:buildId',
+        name: 'build-detail',
+        component: () => import('src/pages/BuildDetailPage.vue')
+      },
+      {
         path: 'settings',
         name: 'settings',
         component: () => import('src/pages/SettingsPage.vue')

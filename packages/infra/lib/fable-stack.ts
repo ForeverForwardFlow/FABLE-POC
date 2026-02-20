@@ -231,6 +231,16 @@ export class FableStack extends cdk.Stack {
       removalPolicy: stage === 'prod' ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
     });
 
+    // Notifications table (persistent notification queue)
+    const notificationsTable = new dynamodb.Table(this, 'NotificationsTable', {
+      tableName: `fable-${stage}-notifications`,
+      partitionKey: { name: 'userId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'notifId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'expiresAt',
+      removalPolicy: stage === 'prod' ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+    });
+
     // ============================================================
     // S3 Bucket for artifacts
     // ============================================================
@@ -379,6 +389,7 @@ export class FableStack extends cdk.Stack {
       AURORA_CLUSTER_ARN: this.auroraCluster.clusterArn,
       AURORA_ENDPOINT: this.auroraCluster.clusterEndpoint.hostname,
       AURORA_DATABASE: 'fable',
+      NOTIFICATIONS_TABLE: notificationsTable.tableName,
     };
 
     // Lambda security group (for Aurora access)
@@ -488,7 +499,9 @@ export class FableStack extends cdk.Stack {
     this.connectionsTable.grantReadWriteData(chatFn);
     this.conversationsTable.grantReadWriteData(routerFn);
     this.conversationsTable.grantReadWriteData(chatFn);
-    this.buildsTable.grantReadData(routerFn); // Router handles list_builds
+    this.buildsTable.grantReadData(routerFn); // Router handles list_builds, get_build
+    this.buildsTable.grantReadData(chatFn); // Chat handles fable_build_health
+    notificationsTable.grantReadWriteData(routerFn); // Router handles list/mark-read notifications
     this.toolsTable.grantReadData(chatFn); // Chat needs to discover tools
     this.workflowsTable.grantReadWriteData(chatFn); // Chat manages workflows
     dbCredentials.grantRead(chatFn);
@@ -627,6 +640,7 @@ export class FableStack extends cdk.Stack {
     // Grant Chat Lambda and Router Lambda permission to invoke Memory Lambda
     memoryFn.grantInvoke(chatFn);
     chatFn.addEnvironment('MEMORY_LAMBDA_ARN', memoryFn.functionArn);
+    chatFn.addEnvironment('GEMINI_API_KEY', config.geminiApiKey || '');
     memoryFn.grantInvoke(routerFn);
     routerFn.addEnvironment('MEMORY_LAMBDA_ARN', memoryFn.functionArn);
 
@@ -674,6 +688,9 @@ export class FableStack extends cdk.Stack {
 
     // Tools can invoke Memory Lambda (for context)
     memoryFn.grantInvoke(toolExecutionRole);
+
+    // Tools can access DynamoDB builds table for persistent storage
+    this.buildsTable.grantReadWriteData(toolExecutionRole);
 
     // Tool Deployer Lambda (uses CJS for AWS SDK compatibility)
     const toolDeployerFn = new lambdaNodejs.NodejsFunction(this, 'ToolDeployerFn', {
@@ -1272,7 +1289,7 @@ export class FableStack extends cdk.Stack {
         // WEBSOCKET_ENDPOINT added after WebSocket API is created below
         STAGE: stage,
       },
-      timeout: cdk.Duration.seconds(120),
+      timeout: cdk.Duration.seconds(300),
       memorySize: 512,
       logRetention: logs.RetentionDays.ONE_WEEK,
       tracing: lambda.Tracing.ACTIVE,
@@ -1301,6 +1318,7 @@ export class FableStack extends cdk.Stack {
       actions: ['bedrock:InvokeModel'],
       resources: ['*'],
     }));
+    notificationsTable.grantWriteData(buildCompletionFn); // Write build notifications
     auditLogTable.grantWriteData(buildCompletionFn);
     buildCompletionFn.addEnvironment('AUDIT_LOG_TABLE', auditLogTable.tableName);
     this.conversationsTable.grantReadData(buildCompletionFn);
@@ -1467,6 +1485,31 @@ export class FableStack extends cdk.Stack {
       actions: ['iam:PassRole'],
       resources: [schedulerRole.roleArn],
     }));
+
+    // Visual QA Lambda (headless browser testing of tool pages)
+    const visualQaFn = new lambdaNodejs.NodejsFunction(this, 'VisualQaFn', {
+      functionName: `fable-${stage}-visual-qa`,
+      entry: path.join(__dirname, '../lambda/visual-qa/index.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      environment: {
+        STAGE: stage,
+      },
+      timeout: cdk.Duration.seconds(60),
+      memorySize: 1536,
+      logRetention: logs.RetentionDays.ONE_WEEK,
+      tracing: lambda.Tracing.ACTIVE,
+      bundling: {
+        minify: true,
+        sourceMap: true,
+        target: 'node20',
+        format: lambdaNodejs.OutputFormat.CJS,
+        nodeModules: ['@sparticuz/chromium', 'puppeteer-core'],
+      },
+    });
+    visualQaFn.grantInvoke(buildCompletionFn);
+    buildCompletionFn.addEnvironment('VISUAL_QA_ARN', visualQaFn.functionArn);
+    buildCompletionFn.addEnvironment('CLOUDFRONT_URL', `https://${frontendDistribution.distributionDomainName}`);
 
     // ============================================================
     // Outputs

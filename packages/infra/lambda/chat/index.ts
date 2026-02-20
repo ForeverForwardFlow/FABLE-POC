@@ -23,6 +23,7 @@ const WORKFLOW_EXECUTOR_ARN = process.env.WORKFLOW_EXECUTOR_ARN!;
 const BUILD_KICKOFF_ARN = process.env.BUILD_KICKOFF_ARN!;
 const SCHEDULER_ROLE_ARN = process.env.SCHEDULER_ROLE_ARN!;
 const STAGE = process.env.STAGE!;
+const BUILDS_TABLE = process.env.BUILDS_TABLE!;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 
 // Map default/anonymous identifiers to UUIDs for Aurora's UUID columns
@@ -862,6 +863,17 @@ const INTERNAL_WORKFLOW_TOOLS: BedrockTool[] = [
       required: ['query'],
     },
   },
+  {
+    name: 'fable_build_health',
+    description: 'Check your own build pipeline health: success rates, failure patterns, average build times, and recent build status. Use this when users ask about your reliability, build history, or when you want to self-diagnose pipeline issues.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'How many recent builds to analyze (default: 20, max: 50)' },
+      },
+      required: [],
+    },
+  },
 ];
 
 async function handleInternalTool(
@@ -897,6 +909,8 @@ async function handleInternalTool(
       return handleWebSearch(input);
     case 'fable_search_memory':
       return handleSearchMemory(input, orgId, userId);
+    case 'fable_build_health':
+      return handleBuildHealth(input, orgId);
     default:
       throw new Error(`Unknown internal tool: ${toolName}`);
   }
@@ -1293,6 +1307,103 @@ async function handleSearchMemory(
     console.error('Error searching memory:', error);
     return { success: false, error: 'Memory search failed' };
   }
+}
+
+async function handleBuildHealth(
+  input: Record<string, unknown>,
+  orgId: string,
+): Promise<unknown> {
+  const limit = Math.min((input.limit as number) || 20, 50);
+
+  try {
+    const result = await docClient.send(new QueryCommand({
+      TableName: BUILDS_TABLE,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+      ExpressionAttributeValues: {
+        ':pk': `ORG#${orgId}`,
+        ':sk': 'BUILD#',
+      },
+      ScanIndexForward: false,
+    }));
+
+    const builds = (result.Items || [])
+      .sort((a, b) => (b.createdAt as string).localeCompare(a.createdAt as string))
+      .slice(0, limit);
+
+    if (builds.length === 0) {
+      return { success: true, message: 'No builds found yet.', metrics: null };
+    }
+
+    // Calculate metrics
+    const completed = builds.filter(b => b.status === 'completed');
+    const failed = builds.filter(b => b.status === 'failed' || b.status === 'needs_help');
+    const active = builds.filter(b => b.status === 'pending' || b.status === 'retrying');
+    const terminal = [...completed, ...failed];
+
+    const successRate = terminal.length > 0
+      ? Math.round((completed.length / terminal.length) * 100)
+      : 0;
+
+    // Average duration for completed builds
+    const durations = completed
+      .filter(b => b.completedAt && b.createdAt)
+      .map(b => new Date(b.completedAt as string).getTime() - new Date(b.createdAt as string).getTime());
+    const avgDurationMs = durations.length > 0 ? durations.reduce((a, c) => a + c, 0) / durations.length : 0;
+    const avgDurationMins = Math.round(avgDurationMs / 60000 * 10) / 10;
+
+    // Retry analysis
+    const retried = builds.filter(b => (b.buildCycle as number) > 1);
+    const maxRetries = builds.reduce((max, b) => Math.max(max, (b.buildCycle as number) || 1), 1);
+
+    // Failure patterns (from result field)
+    const failureReasons: string[] = [];
+    for (const b of failed.slice(0, 5)) {
+      const buildResult = (b.result || {}) as Record<string, unknown>;
+      const fc = (buildResult.failureContext || {}) as Record<string, unknown>;
+      if (fc.fidelityReasoning) failureReasons.push(fc.fidelityReasoning as string);
+      else if (b.error) failureReasons.push(b.error as string);
+      else failureReasons.push('Unknown failure');
+    }
+
+    // Recent builds summary
+    const recentBuilds = builds.slice(0, 10).map(b => ({
+      buildId: (b.buildId as string).slice(0, 8),
+      status: b.status,
+      request: (b.request as string || '').slice(0, 80),
+      cycle: b.buildCycle || 1,
+      age: formatAge(b.createdAt as string),
+    }));
+
+    return {
+      success: true,
+      metrics: {
+        totalBuilds: builds.length,
+        completed: completed.length,
+        failed: failed.length,
+        active: active.length,
+        successRate: `${successRate}%`,
+        avgBuildTime: avgDurationMins > 0 ? `${avgDurationMins} min` : 'N/A',
+        retriedBuilds: retried.length,
+        maxRetryCycles: maxRetries,
+      },
+      recentFailureReasons: failureReasons,
+      recentBuilds,
+      message: `Analyzed ${builds.length} builds: ${successRate}% success rate, avg ${avgDurationMins || '?'} min build time. ${active.length} currently active.`,
+    };
+  } catch (error) {
+    console.error('Error fetching build health:', error);
+    return { success: false, error: 'Failed to query build health' };
+  }
+}
+
+function formatAge(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(ms / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
 }
 
 async function handleStartBuild(

@@ -16,6 +16,7 @@ const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE!;
 const CONVERSATIONS_TABLE = process.env.CONVERSATIONS_TABLE!;
 const BUILDS_TABLE = process.env.BUILDS_TABLE!;
 const MEMORY_LAMBDA_ARN = process.env.MEMORY_LAMBDA_ARN || '';
+const NOTIFICATIONS_TABLE = process.env.NOTIFICATIONS_TABLE!;
 const WEBSOCKET_ENDPOINT = process.env.WEBSOCKET_ENDPOINT!;
 const STAGE = process.env.STAGE!;
 
@@ -37,6 +38,7 @@ interface ClientMessage {
     conversationId?: string;
     memoryId?: string;
     approvedTools?: string[];
+    buildId?: string;
   };
   requestId?: string;
 }
@@ -206,6 +208,49 @@ export const handler: APIGatewayProxyHandler = async (event): Promise<APIGateway
       }
       const builds = await listBuilds(connection.orgId || 'default');
       await sendToConnection(connectionId, { type: 'builds_list', payload: { builds } });
+      return { statusCode: 200, body: 'OK' };
+    }
+
+    // Handle individual build detail
+    if (message.type === 'get_build' && (message.payload as Record<string, unknown>)?.buildId) {
+      const connection = await getConnection(connectionId);
+      if (!connection) {
+        await sendToConnection(connectionId, { type: 'error', message: 'Connection not found' });
+        return { statusCode: 400, body: 'Connection not found' };
+      }
+      const buildId = (message.payload as Record<string, unknown>).buildId as string;
+      const build = await getBuildDetail(connection.orgId || 'default', buildId);
+      if (build) {
+        await sendToConnection(connectionId, { type: 'build_detail', payload: { build } });
+      } else {
+        await sendToConnection(connectionId, { type: 'error', message: 'Build not found' });
+      }
+      return { statusCode: 200, body: 'OK' };
+    }
+
+    // Handle notifications
+    if (message.type === 'list_notifications') {
+      const connection = await getConnection(connectionId);
+      if (!connection) {
+        await sendToConnection(connectionId, { type: 'error', message: 'Connection not found' });
+        return { statusCode: 400, body: 'Connection not found' };
+      }
+      const notifications = await listNotifications(connection.userId);
+      await sendToConnection(connectionId, { type: 'notifications_list', payload: { notifications } });
+      return { statusCode: 200, body: 'OK' };
+    }
+
+    if (message.type === 'mark_notifications_read') {
+      const connection = await getConnection(connectionId);
+      if (!connection) {
+        await sendToConnection(connectionId, { type: 'error', message: 'Connection not found' });
+        return { statusCode: 400, body: 'Connection not found' };
+      }
+      const payload = message.payload as Record<string, unknown> | undefined;
+      const notifIds = payload?.notifIds as string[] | undefined;
+      const all = payload?.all as boolean | undefined;
+      await markNotificationsRead(connection.userId, notifIds, all);
+      await sendToConnection(connectionId, { type: 'notifications_updated' });
       return { statusCode: 200, body: 'OK' };
     }
 
@@ -433,6 +478,83 @@ async function listBuilds(orgId: string) {
     .slice(0, 50);
 }
 
+async function getBuildDetail(orgId: string, buildId: string) {
+  try {
+    const result = await docClient.send(new GetCommand({
+      TableName: BUILDS_TABLE,
+      Key: { PK: `ORG#${orgId}`, SK: `BUILD#${buildId}` },
+    }));
+
+    if (!result.Item) return null;
+
+    const item = result.Item;
+    // Extract QA data from the result field
+    const buildResult = (item.result || {}) as Record<string, unknown>;
+    const fidelity = (buildResult.fidelity || {}) as Record<string, unknown>;
+    const qaResults = ((fidelity.qa as Record<string, unknown>)?.results || []) as Array<Record<string, unknown>>;
+    const fidelityCheck = (fidelity.fidelity || null) as Record<string, unknown> | null;
+    const workflows = (buildResult.workflows || []) as Array<Record<string, unknown>>;
+
+    // Extract failure context
+    const failureContext = (buildResult.failureContext || null) as Record<string, unknown> | null;
+
+    // Extract deployed tools info
+    const deployed = (buildResult.deployed || []) as Array<Record<string, unknown>>;
+    const deployedTools = deployed.map((t: Record<string, unknown>) => ({
+      toolName: t.toolName,
+      functionName: t.functionName,
+    }));
+
+    return {
+      buildId: item.buildId,
+      status: item.status,
+      request: item.request,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+      completedAt: item.completedAt,
+      buildCycle: item.buildCycle || 1,
+      userId: item.userId,
+      parentBuildId: item.parentBuildId || null,
+      resolvedByBuildId: item.resolvedByBuildId || null,
+      conversationId: item.conversationId || null,
+      deployedTools,
+      workflows,
+      qa: {
+        smokeTests: qaResults.map((r: Record<string, unknown>) => ({
+          toolName: r.toolName,
+          allPassed: r.allPassed,
+          testCases: ((r.testCases || []) as Array<Record<string, unknown>>).map((tc: Record<string, unknown>) => ({
+            description: tc.description,
+            passed: tc.passed,
+            error: tc.error || null,
+            expectedOutput: tc.expectedOutput,
+            actualOutput: tc.actualOutput,
+          })),
+        })),
+        fidelity: fidelityCheck ? {
+          pass: fidelityCheck.pass,
+          reasoning: fidelityCheck.reasoning,
+          gaps: fidelityCheck.gaps || [],
+        } : null,
+        uiDefinitionIssues: failureContext?.uiDefinitionIssues || buildResult.uiDefinitionIssues || null,
+        visualQaIssues: failureContext?.visualQaIssues || buildResult.visualQaIssues || null,
+        uxScores: failureContext?.uxScores || buildResult.uxScores || null,
+        uxCritique: failureContext?.uxCritique || buildResult.uxCritique || null,
+        uxSuggestions: failureContext?.uxSuggestions || buildResult.uxSuggestions || null,
+      },
+      failureContext: failureContext ? {
+        smokeTestFailures: failureContext.smokeTestFailures || [],
+        fidelityGaps: failureContext.fidelityGaps || [],
+        fidelityReasoning: failureContext.fidelityReasoning || '',
+      } : null,
+      error: item.error || null,
+    };
+  } catch (err) {
+    console.error('Error fetching build detail:', err);
+    return null;
+  }
+}
+
 async function listUserMemories(userId: string, orgId: string) {
   if (!MEMORY_LAMBDA_ARN) return [];
   try {
@@ -504,6 +626,49 @@ async function sendToConnection(connectionId: string, message: unknown): Promise
       }));
     } else {
       throw error;
+    }
+  }
+}
+
+async function listNotifications(userId: string) {
+  const result = await docClient.send(new QueryCommand({
+    TableName: NOTIFICATIONS_TABLE,
+    KeyConditionExpression: 'userId = :userId',
+    FilterExpression: '#read = :false',
+    ExpressionAttributeValues: {
+      ':userId': userId,
+      ':false': false,
+    },
+    ExpressionAttributeNames: { '#read': 'read' },
+    ScanIndexForward: false, // newest first (by notifId which is timestamp-prefixed)
+    Limit: 50,
+  }));
+
+  return result.Items || [];
+}
+
+async function markNotificationsRead(userId: string, notifIds?: string[], all?: boolean) {
+  if (all) {
+    // Fetch all unread and mark them
+    const unread = await listNotifications(userId);
+    for (const notif of unread) {
+      await docClient.send(new UpdateCommand({
+        TableName: NOTIFICATIONS_TABLE,
+        Key: { userId, notifId: notif.notifId as string },
+        UpdateExpression: 'SET #read = :true',
+        ExpressionAttributeValues: { ':true': true },
+        ExpressionAttributeNames: { '#read': 'read' },
+      }));
+    }
+  } else if (notifIds && notifIds.length > 0) {
+    for (const notifId of notifIds) {
+      await docClient.send(new UpdateCommand({
+        TableName: NOTIFICATIONS_TABLE,
+        Key: { userId, notifId },
+        UpdateExpression: 'SET #read = :true',
+        ExpressionAttributeValues: { ':true': true },
+        ExpressionAttributeNames: { '#read': 'read' },
+      }));
     }
   }
 }

@@ -7,34 +7,52 @@
 
     <!-- Stats Row -->
     <div v-if="buildsStore.builds.length" class="builds-stats">
-      <div class="builds-stats__item">
-        <span class="builds-stats__value text-positive">{{ buildsStore.completedCount }}</span>
-        <span class="builds-stats__label">Completed</span>
-      </div>
-      <div class="builds-stats__item">
-        <span class="builds-stats__value text-negative">{{ buildsStore.failedCount }}</span>
-        <span class="builds-stats__label">Failed</span>
-      </div>
-      <div class="builds-stats__item">
-        <span class="builds-stats__value text-amber">{{ buildsStore.activeCount }}</span>
-        <span class="builds-stats__label">Active</span>
-      </div>
-      <div class="builds-stats__item">
+      <div class="builds-stats__item" :class="{ 'builds-stats__item--active': !buildsStore.statusFilter }" @click="buildsStore.setStatusFilter(null)">
         <span class="builds-stats__value">{{ buildsStore.builds.length }}</span>
         <span class="builds-stats__label">Total</span>
+      </div>
+      <div class="builds-stats__item" :class="{ 'builds-stats__item--active': buildsStore.statusFilter === 'completed' }" @click="buildsStore.setStatusFilter(buildsStore.statusFilter === 'completed' ? null : 'completed')">
+        <span class="builds-stats__value builds-stats__value--completed">{{ buildsStore.completedCount }}</span>
+        <span class="builds-stats__label">Completed</span>
+      </div>
+      <div class="builds-stats__item" :class="{ 'builds-stats__item--active': buildsStore.statusFilter === 'failed' }" @click="buildsStore.setStatusFilter(buildsStore.statusFilter === 'failed' ? null : 'failed')">
+        <span class="builds-stats__value builds-stats__value--failed">{{ buildsStore.failedCount }}</span>
+        <span class="builds-stats__label">Failed</span>
+      </div>
+      <div class="builds-stats__item" :class="{ 'builds-stats__item--active': buildsStore.statusFilter === 'active' }" @click="buildsStore.setStatusFilter(buildsStore.statusFilter === 'active' ? null : 'active')">
+        <span class="builds-stats__value builds-stats__value--active">{{ buildsStore.activeCount }}</span>
+        <span class="builds-stats__label">Active</span>
+      </div>
+    </div>
+
+    <!-- Search -->
+    <div v-if="buildsStore.builds.length" class="builds-page__search">
+      <q-input
+        v-model="searchInput"
+        filled dark dense
+        color="positive"
+        placeholder="Search builds..."
+        clearable
+        @update:model-value="buildsStore.setSearchQuery(searchInput || '')"
+      >
+        <template #prepend><q-icon name="search" /></template>
+      </q-input>
+      <div class="builds-page__success-rate">
+        <span class="builds-page__rate-value">{{ buildsStore.successRate }}%</span>
+        <span class="builds-page__rate-label">success rate</span>
       </div>
     </div>
 
     <!-- Loading -->
     <div v-if="buildsStore.loading && !buildsStore.builds.length" class="builds-page__loading">
-      <q-spinner-dots size="40px" color="purple" />
+      <q-spinner-dots size="40px" color="positive" />
     </div>
 
     <!-- Error State -->
     <div v-else-if="buildsStore.error" class="builds-page__empty">
       <q-icon name="error_outline" size="48px" color="negative" />
       <p>Failed to load builds</p>
-      <q-btn flat no-caps color="purple" label="Retry" icon="refresh" @click="buildsStore.fetchBuilds()" />
+      <q-btn flat no-caps color="positive" label="Retry" icon="refresh" @click="buildsStore.fetchBuilds()" />
     </div>
 
     <!-- Empty State -->
@@ -48,17 +66,20 @@
 
     <!-- Build List -->
     <div v-else class="builds-list">
+      <div v-if="buildsStore.filteredBuilds.length === 0" class="builds-page__empty">
+        <p>No builds match your filters.</p>
+      </div>
       <div
-        v-for="build in buildsStore.builds"
+        v-for="build in buildsStore.filteredBuilds"
         :key="build.buildId"
         class="build-card"
+        @click="$router.push({ name: 'build-detail', params: { buildId: build.buildId } })"
       >
         <div class="build-card__header">
-          <q-badge
-            :color="statusColor(build.status)"
-            :label="build.status"
+          <span
             class="build-card__status"
-          />
+            :class="'build-card__status--' + build.status"
+          >{{ build.status }}</span>
           <span class="build-card__time">{{ formatTime(build.createdAt) }}</span>
         </div>
 
@@ -74,38 +95,29 @@
             <q-icon name="timer" size="12px" />
             {{ formatDuration(build.createdAt, build.completedAt) }}
           </span>
+          <q-icon name="chevron_right" size="16px" class="build-card__arrow" />
         </div>
       </div>
     </div>
 
     <!-- Refresh -->
     <div v-if="buildsStore.builds.length" class="builds-page__actions">
-      <q-btn flat no-caps color="purple" label="Refresh" icon="refresh" @click="buildsStore.fetchBuilds()" :loading="buildsStore.loading" />
+      <q-btn flat no-caps color="positive" label="Refresh" icon="refresh" @click="buildsStore.fetchBuilds()" :loading="buildsStore.loading" />
     </div>
   </q-page>
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, watch } from 'vue';
+import { ref, onMounted, onUnmounted, watch } from 'vue';
 import type { WsIncomingMessage } from 'src/types';
 import { useBuildsStore } from 'src/stores/builds-store';
 import { fableWs } from 'src/boot/websocket';
 
 const buildsStore = useBuildsStore();
+const searchInput = ref(buildsStore.searchQuery);
 
 let unsubscribe: (() => void) | null = null;
 let unwatchConnected: (() => void) | null = null;
-
-function statusColor(status: string): string {
-  const colors: Record<string, string> = {
-    completed: 'positive',
-    failed: 'negative',
-    needs_help: 'orange',
-    pending: 'grey',
-    retrying: 'amber',
-  };
-  return colors[status] || 'grey';
-}
 
 function formatTime(iso: string): string {
   const date = new Date(iso);
@@ -141,6 +153,10 @@ onMounted(() => {
     }
     if (msg.type === 'error' && buildsStore.loading) {
       buildsStore.handleError(msg.message || 'Failed to load builds');
+    }
+    // Auto-refresh on build events
+    if (msg.type === 'build_completed' || msg.type === 'build_failed' || msg.type === 'build_needs_help' || msg.type === 'build_started') {
+      buildsStore.fetchBuilds();
     }
   });
 
@@ -186,6 +202,35 @@ onUnmounted(() => {
     margin: 0;
   }
 
+  &__search {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-bottom: 16px;
+
+    .q-input { flex: 1; }
+  }
+
+  &__success-rate {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 70px;
+  }
+
+  &__rate-value {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--ff-text-primary);
+  }
+
+  &__rate-label {
+    font-size: 10px;
+    color: var(--ff-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
   &__loading {
     display: flex;
     justify-content: center;
@@ -217,8 +262,8 @@ onUnmounted(() => {
 
 .builds-stats {
   display: flex;
-  gap: 16px;
-  margin-bottom: 24px;
+  gap: 12px;
+  margin-bottom: 16px;
 
   &__item {
     flex: 1;
@@ -229,11 +274,20 @@ onUnmounted(() => {
     background: var(--ff-bg-card);
     border: 1px solid var(--ff-border);
     border-radius: var(--ff-radius-md);
+    cursor: pointer;
+    transition: border-color 0.15s;
+
+    &:hover { border-color: rgba(0, 255, 65, 0.3); }
+    &--active { border-color: rgba(0, 255, 65, 0.5); background: rgba(0, 255, 65, 0.03); }
   }
 
   &__value {
     font-size: 24px;
     font-weight: 700;
+
+    &--completed { color: #4ade80; }
+    &--failed { color: #f87171; }
+    &--active { color: #fbbf24; }
   }
 
   &__label {
@@ -256,6 +310,12 @@ onUnmounted(() => {
   border: 1px solid var(--ff-border);
   border-radius: var(--ff-radius-lg);
   padding: 14px 16px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+
+  &:hover {
+    border-color: rgba(0, 255, 65, 0.3);
+  }
 
   &__header {
     display: flex;
@@ -266,8 +326,17 @@ onUnmounted(() => {
 
   &__status {
     text-transform: uppercase;
-    font-size: 10px;
+    font-size: 11px;
+    font-weight: 600;
     letter-spacing: 0.5px;
+    padding: 3px 8px;
+    border-radius: 2px;
+    border: 1px solid;
+
+    &--completed { color: #4ade80; border-color: rgba(74, 222, 128, 0.4); background: rgba(74, 222, 128, 0.1); }
+    &--failed { color: #f87171; border-color: rgba(248, 113, 113, 0.4); background: rgba(248, 113, 113, 0.1); }
+    &--pending { color: #9ca3af; border-color: rgba(156, 163, 175, 0.4); background: rgba(156, 163, 175, 0.1); }
+    &--retrying, &--needs_help { color: #fbbf24; border-color: rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.1); }
   }
 
   &__time {
@@ -309,6 +378,11 @@ onUnmounted(() => {
     display: flex;
     align-items: center;
     gap: 3px;
+  }
+
+  &__arrow {
+    margin-left: auto;
+    color: var(--ff-text-muted);
   }
 }
 </style>
