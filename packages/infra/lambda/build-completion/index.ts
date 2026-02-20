@@ -25,6 +25,7 @@ const TOOL_DEPLOYER_ARN = process.env.TOOL_DEPLOYER_ARN!;
 const WEBSOCKET_ENDPOINT = process.env.WEBSOCKET_ENDPOINT!;
 const BUILD_KICKOFF_ARN = process.env.BUILD_KICKOFF_ARN!;
 const MAX_BUILD_CYCLES = parseInt(process.env.MAX_BUILD_CYCLES || '5', 10);
+const NOTIFICATIONS_TABLE = process.env.NOTIFICATIONS_TABLE;
 const WORKFLOWS_TABLE = process.env.WORKFLOWS_TABLE;
 const WORKFLOW_EXECUTOR_ARN = process.env.WORKFLOW_EXECUTOR_ARN;
 const SCHEDULER_ROLE_ARN = process.env.SCHEDULER_ROLE_ARN;
@@ -32,7 +33,9 @@ const STAGE = process.env.STAGE || 'dev';
 const AUDIT_LOG_TABLE = process.env.AUDIT_LOG_TABLE;
 const CONVERSATIONS_TABLE = process.env.CONVERSATIONS_TABLE;
 const MEMORY_LAMBDA_ARN = process.env.MEMORY_LAMBDA_ARN;
-const VERSION = '10'; // bump to force deploy
+const VISUAL_QA_ARN = process.env.VISUAL_QA_ARN;
+const CLOUDFRONT_URL = process.env.CLOUDFRONT_URL;
+const VERSION = '11'; // bump to force deploy
 
 interface EcsTaskStateChangeEvent {
   detail: {
@@ -104,12 +107,39 @@ export const handler = async (event: EcsTaskStateChangeEvent): Promise<void> => 
   const buildCycle = (buildRecord.buildCycle as number) || 1;
 
   if (buildSucceeded && builderOutput) {
-    // Handle fix builds (no tool deployment needed)
+    // Handle fix builds — still deploy tools if the fix updated uiDefinitions
     const fixType = builderOutput.fixType as string | undefined;
     if (fixType) {
       console.log(`Fix build completed (type: ${fixType})`);
       const fixDescription = (builderOutput.description as string) || 'Fix applied';
       const filesChanged = (builderOutput.filesChanged as string[]) || [];
+
+      // If the fix build also output tools (e.g., updated uiDefinition), deploy them
+      const fixTools = builderOutput.tools as unknown[];
+      let deployedTools: string[] = [];
+      if (fixTools && fixTools.length > 0) {
+        console.log(`Fix build includes ${fixTools.length} tool updates, deploying...`);
+        try {
+          const deployResult = await lambdaClient.send(new InvokeCommand({
+            FunctionName: TOOL_DEPLOYER_ARN,
+            Payload: Buffer.from(JSON.stringify({
+              action: 'deploy',
+              payload: {
+                buildId,
+                oiOutput: builderOutput,
+                orgId,
+                userId,
+              },
+            })),
+          }));
+          const deployResponse = JSON.parse(Buffer.from(deployResult.Payload!).toString());
+          console.log('Fix deploy result:', JSON.stringify(deployResponse).slice(0, 500));
+          deployedTools = (fixTools as Array<{ toolName?: string }>).map(t => t.toolName || 'unknown');
+        } catch (err) {
+          console.error('Fix tool deployment failed (non-fatal):', err);
+        }
+      }
+
       await updateBuildStatus(buildRecord, 'completed', {
         statusCode: 200,
         body: JSON.stringify({
@@ -118,6 +148,7 @@ export const handler = async (event: EcsTaskStateChangeEvent): Promise<void> => 
           fixType,
           description: fixDescription,
           filesChanged,
+          deployedTools,
         }),
         fidelity: { requirement: buildRecord.request, buildCycle, fixType },
         workflows: [],
@@ -128,12 +159,13 @@ export const handler = async (event: EcsTaskStateChangeEvent): Promise<void> => 
         payload: {
           buildId,
           status: 'completed',
-          tools: [],
+          tools: deployedTools,
           fixType,
           message: `${fixLabel} fix deployed! ${fixDescription}`,
           filesChanged,
         },
       });
+      await writeNotification(userId, 'build_completed', `${fixLabel} Fix Deployed`, `${fixDescription}`, { buildId, fixType });
       return;
     }
 
@@ -206,7 +238,71 @@ export const handler = async (event: EcsTaskStateChangeEvent): Promise<void> => 
         console.log(`Fidelity check: ${fidelityResult.pass ? 'PASSED' : 'FAILED'} — ${fidelityResult.reasoning}`);
       }
 
-      const allQaPassed = allSmokePassed && (fidelityResult === null || fidelityResult.pass);
+      // === Layer 1: uiDefinition Validation (deterministic) ===
+      let uiDefResult: UiValidationResult = { pass: true, issues: [] };
+      if (allSmokePassed && (fidelityResult === null || fidelityResult.pass)) {
+        console.log('Running uiDefinition validation (Layer 1)...');
+        uiDefResult = validateAllUiDefinitions(deployedTools, toolSpecs);
+        console.log(`uiDefinition validation: ${uiDefResult.pass ? 'PASSED' : 'FAILED'} (${uiDefResult.issues.length} issues)`);
+        for (const issue of uiDefResult.issues) {
+          console.log(`  - ${issue}`);
+        }
+      }
+
+      // === Layer 2: Visual QA via headless browser (non-blocking) ===
+      const visualQaResults: Record<string, VisualQaResult> = {};
+      const visualQaIssues: string[] = [];
+      if (uiDefResult.pass && allSmokePassed && (fidelityResult === null || fidelityResult.pass)) {
+        console.log('Running visual QA (Layer 2)...');
+        for (const deployedTool of deployedTools) {
+          const vqa = await invokeVisualQa(deployedTool.toolName);
+          if (vqa) {
+            visualQaResults[deployedTool.toolName] = vqa;
+            if (!vqa.pageLoaded) visualQaIssues.push(`${deployedTool.toolName}: Page failed to load`);
+            if (vqa.pageLoaded && !vqa.formFound) visualQaIssues.push(`${deployedTool.toolName}: Form not found on page`);
+            if (vqa.errors?.length > 0) {
+              for (const err of vqa.errors) {
+                visualQaIssues.push(`${deployedTool.toolName}: ${err}`);
+              }
+            }
+            console.log(`Visual QA for ${deployedTool.toolName}: loaded=${vqa.pageLoaded}, form=${vqa.formFound}, fields=${vqa.formFieldCount}, submitted=${vqa.submitted}, result=${vqa.resultDisplayed}`);
+          } else {
+            console.log(`Visual QA skipped/failed for ${deployedTool.toolName} (non-blocking)`);
+          }
+        }
+        // Visual QA issues are logged but don't block — Layer 3 uses them for scoring
+      }
+
+      // === Layer 3: Adversarial UX Scoring (LLM-based) ===
+      let uxScoreResult: UxScoreResult | null = null;
+      if (uiDefResult.pass && allSmokePassed && (fidelityResult === null || fidelityResult.pass) && deployedTools.length > 0) {
+        console.log('Running adversarial UX scoring (Layer 3)...');
+        const firstTool = deployedTools[0];
+        const firstSpec = toolSpecs.find((t: Record<string, unknown>) => t.toolName === firstTool.toolName);
+        const uiDef = (firstSpec?.uiDefinition || {}) as Record<string, unknown>;
+        const vqa = visualQaResults[firstTool.toolName] || null;
+        const snapshots = vqa ? { formSnapshot: vqa.formSnapshot, resultSnapshot: vqa.resultSnapshot } : null;
+
+        uxScoreResult = await scoreUxAdversarial(
+          firstTool.schema?.description || firstTool.toolName,
+          uiDef,
+          (buildRecord.request as string) || '',
+          snapshots,
+        );
+        console.log(`UX score: avg=${uxScoreResult.averageScore}, pass=${uxScoreResult.pass}`);
+        console.log(`  Scores: disc=${uxScoreResult.scores.discoverability}, ease=${uxScoreResult.scores.ease_of_use}, clarity=${uxScoreResult.scores.result_clarity}`);
+        if (!uxScoreResult.pass && uxScoreResult.critique) {
+          console.log(`  Critique: ${uxScoreResult.critique}`);
+        }
+      }
+
+      // === Combined QA Decision ===
+      const allQaPassed = allSmokePassed
+        && (fidelityResult === null || fidelityResult.pass)
+        && uiDefResult.pass
+        && (uxScoreResult === null || uxScoreResult.pass);
+
+      console.log(`Combined QA: smoke=${allSmokePassed}, fidelity=${fidelityResult?.pass ?? 'skip'}, uiDef=${uiDefResult.pass}, uxScore=${uxScoreResult?.pass ?? 'skip'} → ${allQaPassed ? 'PASSED' : 'FAILED'}`);
 
       if (allQaPassed) {
         // Create workflows if builder output includes them
@@ -237,6 +333,12 @@ export const handler = async (event: EcsTaskStateChangeEvent): Promise<void> => 
           type: 'build_completed',
           payload: { buildId, status: 'completed', tools: deployedTools, workflows: createdWorkflows },
         });
+        const toolNames = deployedTools.map((t: Record<string, unknown>) => t.toolName as string);
+        await writeNotification(
+          userId, 'build_completed', 'Build Complete',
+          `${toolNames.join(', ')} ${toolNames.length === 1 ? 'is' : 'are'} ready to use`,
+          { buildId, toolNames },
+        );
 
         // Extract learnings from the build conversation (fire-and-forget)
         if (buildRecord.conversationId && deployedTools.length > 0) {
@@ -249,8 +351,8 @@ export const handler = async (event: EcsTaskStateChangeEvent): Promise<void> => 
           ).catch(err => console.warn('Memory extraction failed:', err));
         }
       } else {
-        // QA FAILED — outer retry loop
-        const failureContext = {
+        // QA FAILED — outer retry loop with extended UX context
+        const failureContext: FailureContext = {
           smokeTestFailures: qaResults.filter(r => !r.allPassed).map(r => ({
             toolName: r.toolName,
             failedTests: r.testCases.filter(tc => !tc.passed).map(tc => ({
@@ -262,6 +364,16 @@ export const handler = async (event: EcsTaskStateChangeEvent): Promise<void> => 
           })),
           fidelityGaps: fidelityResult?.gaps || [],
           fidelityReasoning: fidelityResult?.reasoning || '',
+          uiDefinitionIssues: uiDefResult.issues.length > 0 ? uiDefResult.issues : undefined,
+          visualQaIssues: visualQaIssues.length > 0 ? visualQaIssues : undefined,
+          uxScores: uxScoreResult ? {
+            discoverability: uxScoreResult.scores.discoverability,
+            ease_of_use: uxScoreResult.scores.ease_of_use,
+            result_clarity: uxScoreResult.scores.result_clarity,
+            average: uxScoreResult.averageScore,
+          } : undefined,
+          uxCritique: uxScoreResult?.critique || undefined,
+          uxSuggestions: uxScoreResult?.suggestions?.length ? uxScoreResult.suggestions : undefined,
         };
 
         await retryOrAskForHelp(buildRecord, buildCycle, failureContext, userId);
@@ -404,6 +516,14 @@ function partialMatch(actual: unknown, expected: Record<string, unknown>): boole
       const diff = Math.abs(actualObj[key] as number - expectedVal);
       const threshold = Math.max(Math.abs(expectedVal) * 0.2, 5);
       if (diff > threshold) return false;
+    } else if (typeof expectedVal === 'string' && typeof actualObj[key] === 'string') {
+      // For error fields, use substring matching — error messages naturally vary with context
+      // e.g. expected "Failed to encode" should match "Failed to encode image: fetch failed"
+      if (key === 'error' || key === 'errorMessage') {
+        if (!(actualObj[key] as string).includes(expectedVal)) return false;
+      } else {
+        if (actualObj[key] !== expectedVal) return false;
+      }
     } else {
       if (actualObj[key] !== expectedVal) return false;
     }
@@ -467,10 +587,272 @@ or
   }
 }
 
+// ============================================================
+// Layer 1: uiDefinition Validation (deterministic)
+// ============================================================
+
+interface UiValidationResult {
+  pass: boolean;
+  issues: string[];
+}
+
+const MATERIAL_ICON_REGEX = /^[a-z][a-z0-9_]*$/;
+
+function validateUiDefinition(
+  toolName: string,
+  uiDefinition: Record<string, unknown> | undefined,
+): UiValidationResult {
+  const issues: string[] = [];
+
+  if (!uiDefinition) {
+    return { pass: false, issues: [`${toolName}: Missing uiDefinition — every tool must define its UI`] };
+  }
+
+  // Check examples (2+ required)
+  const examples = uiDefinition.examples as Array<unknown> | undefined;
+  if (!examples || !Array.isArray(examples) || examples.length < 2) {
+    issues.push(`${toolName}: Needs 2+ examples for users to try, found ${examples?.length || 0}`);
+  }
+
+  // Check resultDisplay (for simple layout or when no tabs)
+  const layout = uiDefinition.layout as string | undefined;
+  const tabs = uiDefinition.tabs as Array<Record<string, unknown>> | undefined;
+
+  if (layout === 'tabs' && tabs?.length) {
+    // Tabbed layout: validate each tab has form and/or resultDisplay
+    for (const tab of tabs) {
+      const tabKey = (tab.key as string) || 'unknown';
+      if (!tab.form && !tab.resultDisplay) {
+        issues.push(`${toolName}: Tab "${tabKey}" needs form and/or resultDisplay`);
+      }
+      const tabResult = tab.resultDisplay as Record<string, unknown> | undefined;
+      if (tabResult?.type === 'list') {
+        const listConfig = tabResult.list as Record<string, unknown> | undefined;
+        if (!listConfig?.itemsField) {
+          issues.push(`${toolName}: Tab "${tabKey}" list display needs list.itemsField`);
+        }
+      }
+    }
+  } else {
+    // Simple layout: validate top-level resultDisplay
+    const resultDisplay = uiDefinition.resultDisplay as Record<string, unknown> | undefined;
+    if (!resultDisplay) {
+      issues.push(`${toolName}: Missing resultDisplay — results must be formatted for humans`);
+    } else {
+      if (!resultDisplay.summaryTemplate) {
+        issues.push(`${toolName}: Missing resultDisplay.summaryTemplate — add a sentence explaining results`);
+      }
+      const displayType = resultDisplay.type as string | undefined;
+      if (!displayType || displayType === 'json') {
+        issues.push(`${toolName}: resultDisplay.type must be cards, table, text, or list (not raw json)`);
+      }
+      if (displayType === 'list') {
+        const listConfig = resultDisplay.list as Record<string, unknown> | undefined;
+        if (!listConfig?.itemsField) {
+          issues.push(`${toolName}: list display needs list.itemsField`);
+        }
+      }
+    }
+  }
+
+  // Check icon format
+  const icon = uiDefinition.icon as string | undefined;
+  if (icon && !MATERIAL_ICON_REGEX.test(icon)) {
+    issues.push(`${toolName}: Icon "${icon}" is not a valid Material Icon name (use lowercase_with_underscores)`);
+  }
+
+  // Check form field labels
+  const form = uiDefinition.form as Record<string, unknown> | undefined;
+  const fields = (form?.fields || []) as Array<Record<string, unknown>>;
+  for (const field of fields) {
+    const key = field.key as string;
+    const label = field.label as string | undefined;
+    if (!label || label === key || label === key.replace(/_/g, ' ')) {
+      issues.push(`${toolName}: Field "${key}" needs a human-readable label (not "${label || key}")`);
+    }
+  }
+
+  return { pass: issues.length === 0, issues };
+}
+
+function validateAllUiDefinitions(
+  deployedTools: Array<{ toolName: string }>,
+  toolSpecs: Array<Record<string, unknown>>,
+): UiValidationResult {
+  const allIssues: string[] = [];
+  for (const deployedTool of deployedTools) {
+    const spec = toolSpecs.find((t: Record<string, unknown>) => t.toolName === deployedTool.toolName);
+    const uiDef = spec?.uiDefinition as Record<string, unknown> | undefined;
+    const validation = validateUiDefinition(deployedTool.toolName, uiDef);
+    allIssues.push(...validation.issues);
+  }
+  return { pass: allIssues.length === 0, issues: allIssues };
+}
+
+// ============================================================
+// Layer 2: Visual QA (invoke headless browser Lambda)
+// ============================================================
+
+interface VisualQaResult {
+  pageLoaded: boolean;
+  formFound: boolean;
+  formFieldCount: number;
+  exampleButtonsFound: number;
+  exampleFilled: boolean;
+  submitted: boolean;
+  resultDisplayed: boolean;
+  errors: string[];
+  formSnapshot: string;
+  resultSnapshot: string;
+}
+
+async function invokeVisualQa(toolName: string): Promise<VisualQaResult | null> {
+  if (!VISUAL_QA_ARN || !CLOUDFRONT_URL) {
+    console.log('Visual QA skipped: VISUAL_QA_ARN or CLOUDFRONT_URL not configured');
+    return null;
+  }
+
+  try {
+    const result = await lambdaClient.send(new InvokeCommand({
+      FunctionName: VISUAL_QA_ARN,
+      Payload: Buffer.from(JSON.stringify({ toolName, cloudFrontUrl: CLOUDFRONT_URL })),
+    }));
+
+    if (result.FunctionError) {
+      const errorBody = Buffer.from(result.Payload!).toString();
+      console.warn(`Visual QA Lambda error for ${toolName}:`, errorBody.slice(0, 500));
+      return null;
+    }
+
+    return JSON.parse(Buffer.from(result.Payload!).toString()) as VisualQaResult;
+  } catch (err) {
+    console.warn(`Visual QA invocation failed for ${toolName}:`, err);
+    return null;
+  }
+}
+
+// ============================================================
+// Layer 3: Adversarial UX Scoring (LLM-based)
+// ============================================================
+
+interface UxScoreResult {
+  pass: boolean;
+  scores: { discoverability: number; ease_of_use: number; result_clarity: number };
+  averageScore: number;
+  critique: string;
+  suggestions: string[];
+}
+
+async function scoreUxAdversarial(
+  toolDescription: string,
+  uiDefinition: Record<string, unknown>,
+  originalRequest: string,
+  visualQaSnapshots: { formSnapshot?: string; resultSnapshot?: string } | null,
+): Promise<UxScoreResult> {
+  const DEFAULT_PASS: UxScoreResult = {
+    pass: true,
+    scores: { discoverability: 7, ease_of_use: 7, result_clarity: 7 },
+    averageScore: 7,
+    critique: 'UX scoring unavailable, defaulting to pass',
+    suggestions: [],
+  };
+
+  const snapshotContext = visualQaSnapshots?.formSnapshot
+    ? `\n\nPage accessibility snapshots from headless browser test:\nForm area:\n${visualQaSnapshots.formSnapshot.slice(0, 2000)}\nResult area:\n${(visualQaSnapshots.resultSnapshot || '(not captured)').slice(0, 2000)}`
+    : '';
+
+  const prompt = `You are a non-technical user who has never seen this tool before. You cannot read code or JSON — you can only see the web interface.
+
+A tool was built for a user who requested: "${originalRequest}"
+
+Tool description: "${toolDescription}"
+
+The tool's UI definition (drives the web form and result display):
+${JSON.stringify(uiDefinition, null, 2).slice(0, 3000)}
+${snapshotContext}
+
+Score this tool's UX on three dimensions (1-10 each):
+
+1. **discoverability** — Can you figure out what this tool does and how to use it from the page? Are labels clear? Is the purpose obvious? Are there examples to try?
+2. **ease_of_use** — Are form fields intuitive? Do labels explain what to enter? Is the submit action clear? Would a non-technical person know what to do?
+3. **result_clarity** — Will the user understand the output? Are results shown with context (summary sentence, formatted values, meaningful icons)? Or is it raw data?
+
+A score of 6+ means "a non-technical user could use this without confusion."
+Below 6 means "users would struggle or give up."
+
+Common problems that score low:
+- Form fields labeled with programmer names like "input_text" or "num_items"
+- No examples for users to try
+- Results shown as raw JSON or numbers without context
+- No summary explaining what the results mean
+
+Respond with ONLY valid JSON:
+{
+  "scores": { "discoverability": N, "ease_of_use": N, "result_clarity": N },
+  "critique": "One paragraph explaining the biggest UX issues from a non-technical user's perspective",
+  "suggestions": ["specific actionable improvement 1", "specific actionable improvement 2"]
+}`;
+
+  try {
+    const response = await bedrockClient.send(new InvokeModelCommand({
+      modelId: 'us.anthropic.claude-sonnet-4-20250514-v1:0',
+      contentType: 'application/json',
+      accept: 'application/json',
+      body: JSON.stringify({
+        anthropic_version: 'bedrock-2023-05-31',
+        max_tokens: 800,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    }));
+
+    const body = JSON.parse(new TextDecoder().decode(response.body));
+    const text = body.content?.[0]?.text || '';
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      const scores = parsed.scores || {};
+      const d = Number(scores.discoverability) || 5;
+      const e = Number(scores.ease_of_use) || 5;
+      const r = Number(scores.result_clarity) || 5;
+      const avg = Math.round(((d + e + r) / 3) * 10) / 10;
+
+      return {
+        pass: avg >= 6,
+        scores: { discoverability: d, ease_of_use: e, result_clarity: r },
+        averageScore: avg,
+        critique: parsed.critique || '',
+        suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions : [],
+      };
+    }
+
+    console.warn('Could not parse UX score response, defaulting to pass');
+    return DEFAULT_PASS;
+  } catch (err) {
+    console.error('UX scoring error:', err);
+    return { ...DEFAULT_PASS, critique: `UX scoring failed (${String(err)}), defaulting to pass` };
+  }
+}
+
+// ============================================================
+// Outer Retry Loop
+// ============================================================
+
+interface FailureContext {
+  smokeTestFailures: unknown[];
+  fidelityGaps: string[];
+  fidelityReasoning: string;
+  uiDefinitionIssues?: string[];
+  visualQaIssues?: string[];
+  uxScores?: { discoverability: number; ease_of_use: number; result_clarity: number; average: number };
+  uxCritique?: string;
+  uxSuggestions?: string[];
+}
+
 async function retryOrAskForHelp(
   buildRecord: Record<string, unknown>,
   buildCycle: number,
-  failureContext: { smokeTestFailures: unknown[]; fidelityGaps: string[]; fidelityReasoning: string },
+  failureContext: FailureContext,
   userId: string,
 ): Promise<void> {
   const buildId = buildRecord.buildId as string;
@@ -535,13 +917,21 @@ async function retryOrAskForHelp(
           buildCycle,
         },
       });
+      await writeNotification(userId, 'build_needs_help', 'Build Needs Help', summary, { buildId, buildCycle });
     }
   } else {
     // Exhausted all cycles — ask user for help
     console.log(`Exhausted ${MAX_BUILD_CYCLES} build cycles, asking user for help`);
-    const summary = failureContext.fidelityGaps.length > 0
-      ? `I've tried ${buildCycle} times but the tool doesn't fully match your requirements. Gaps: ${failureContext.fidelityGaps.join(', ')}`
-      : `I've tried ${buildCycle} times but the tool isn't passing verification. Last issue: ${failureContext.fidelityReasoning}`;
+    let summary: string;
+    if (failureContext.uiDefinitionIssues?.length) {
+      summary = `I've tried ${buildCycle} times but the tool's UI doesn't meet quality standards. Issues: ${failureContext.uiDefinitionIssues.slice(0, 3).join('; ')}`;
+    } else if (failureContext.uxCritique) {
+      summary = `I've tried ${buildCycle} times but the tool's UX scored ${failureContext.uxScores?.average || 'low'}/10. ${failureContext.uxCritique.slice(0, 200)}`;
+    } else if (failureContext.fidelityGaps.length > 0) {
+      summary = `I've tried ${buildCycle} times but the tool doesn't fully match your requirements. Gaps: ${failureContext.fidelityGaps.join(', ')}`;
+    } else {
+      summary = `I've tried ${buildCycle} times but the tool isn't passing verification. Last issue: ${failureContext.fidelityReasoning}`;
+    }
 
     await updateBuildStatus(buildRecord, 'needs_help', { buildCycle, failureContext });
     await notifyUser(userId, {
@@ -553,6 +943,7 @@ async function retryOrAskForHelp(
         buildCycle,
       },
     });
+    await writeNotification(userId, 'build_needs_help', 'Build Needs Help', summary, { buildId, buildCycle });
   }
 }
 
@@ -860,6 +1251,38 @@ async function createWorkflows(
   }
 
   return results;
+}
+
+async function writeNotification(
+  userId: string,
+  type: string,
+  title: string,
+  message: string,
+  metadata: Record<string, unknown> = {},
+): Promise<void> {
+  if (!NOTIFICATIONS_TABLE) return;
+  try {
+    const now = Date.now();
+    const notifId = `${now}#${crypto.randomUUID().slice(0, 8)}`;
+    const expiresAt = Math.floor(now / 1000) + 30 * 24 * 60 * 60; // 30 days TTL
+    await docClient.send(new PutCommand({
+      TableName: NOTIFICATIONS_TABLE,
+      Item: {
+        userId,
+        notifId,
+        type,
+        title,
+        message,
+        metadata,
+        read: false,
+        createdAt: new Date(now).toISOString(),
+        expiresAt,
+      },
+    }));
+    console.log(`Notification written: ${type} for ${userId}`);
+  } catch (err) {
+    console.error('Failed to write notification:', err);
+  }
 }
 
 async function notifyUser(userId: string, message: Record<string, unknown>): Promise<void> {

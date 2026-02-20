@@ -40,13 +40,14 @@ jobs:
 
       - name: Write CDK config
         run: |
-          cat > packages/infra/fable.config.ts << 'FABLECONFIG'
+          cat > packages/infra/fable.config.ts << FABLECONFIG
           import type { FableConfig } from './lib/fable-config';
           const config: FableConfig = {
             stage: 'dev',
             region: 'us-west-2',
             githubSecretName: 'fable/dev/github-app',
             toolsRepo: 'ForeverForwardFlow/FABLE-TOOLS',
+            geminiApiKey: '${{ secrets.GEMINI_API_KEY }}',
           };
           export default config;
           FABLECONFIG

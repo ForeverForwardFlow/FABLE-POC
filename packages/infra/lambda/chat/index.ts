@@ -23,6 +23,7 @@ const WORKFLOW_EXECUTOR_ARN = process.env.WORKFLOW_EXECUTOR_ARN!;
 const BUILD_KICKOFF_ARN = process.env.BUILD_KICKOFF_ARN!;
 const SCHEDULER_ROLE_ARN = process.env.SCHEDULER_ROLE_ARN!;
 const STAGE = process.env.STAGE!;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 
 // Map default/anonymous identifiers to UUIDs for Aurora's UUID columns
 const DEFAULT_ORG_UUID = '00000000-0000-0000-0000-000000000001';
@@ -113,17 +114,18 @@ export const handler = async (event: ChatEvent): Promise<void> => {
   const messageId = crypto.randomUUID();
 
   try {
-    // Query relevant memories, user preferences, and available tools in parallel
-    const [memories, preferences, tools] = await Promise.all([
+    // Query relevant memories, user preferences, institutional knowledge, and available tools in parallel
+    const [memories, preferences, institutionalKnowledge, tools] = await Promise.all([
       queryMemories(message, userId, orgId),
       loadUserPreferences(userId, orgId),
+      loadInstitutionalKnowledge(userId, orgId),
       discoverTools(orgId),
     ]);
 
-    console.log(`Found ${tools.length} tools for org ${orgId}, ${preferences.length} user preferences`);
+    console.log(`Found ${tools.length} tools for org ${orgId}, ${preferences.length} user preferences, ${institutionalKnowledge.length} institutional memories`);
 
     // Build system prompt
-    const systemPrompt = buildSystemPrompt(memories, preferences, context, intent, tools);
+    const systemPrompt = buildSystemPrompt(memories, preferences, institutionalKnowledge, context, intent, tools);
 
     // Convert tools to Bedrock format (external + internal workflow tools)
     // Sanitize schemas — Bedrock doesn't support oneOf/allOf/anyOf
@@ -328,6 +330,8 @@ interface MemoryResult {
   scope: string;
   importance: number;
   similarity: number;
+  score?: number;
+  tags?: string[];
   createdAt: string;
 }
 
@@ -342,7 +346,7 @@ async function queryMemories(query: string, userId: string, orgId: string): Prom
           userId: toMemoryUserId(userId),
           orgId: toMemoryOrgId(orgId),
           scopes: ['user', 'org', 'global'],
-          limit: 5,
+          limit: 10,
         },
       }),
     }));
@@ -354,7 +358,7 @@ async function queryMemories(query: string, userId: string, orgId: string): Prom
       if (body.success && body.memories) {
         // Filter by minimum similarity threshold and format for prompt
         return body.memories
-          .filter((m: MemoryResult) => m.similarity >= 0.5)
+          .filter((m: MemoryResult) => m.similarity >= 0.3)
           .map((m: MemoryResult) => {
             const typeLabel = {
               insight: '💡',
@@ -373,6 +377,42 @@ async function queryMemories(query: string, userId: string, orgId: string): Prom
   } catch (error) {
     console.error('Error querying memories:', error);
     // Don't fail the chat if memory lookup fails
+    return [];
+  }
+}
+
+// Load FABLE's institutional knowledge — architecture, patterns, capabilities, gotchas
+// This runs proactively so FABLE always knows about itself regardless of the user's question
+async function loadInstitutionalKnowledge(userId: string, orgId: string): Promise<string[]> {
+  try {
+    const response = await lambdaClient.send(new InvokeCommand({
+      FunctionName: MEMORY_LAMBDA_ARN,
+      Payload: JSON.stringify({
+        action: 'search',
+        payload: {
+          query: 'FABLE architecture build pipeline tools infrastructure capabilities patterns deployment UI frontend Quasar interactive tabs list display theme',
+          userId: toMemoryUserId(userId),
+          orgId: toMemoryOrgId(orgId),
+          scopes: ['user', 'org', 'global'],
+          limit: 15,
+        },
+      }),
+    }));
+
+    if (response.Payload) {
+      const result = JSON.parse(new TextDecoder().decode(response.Payload));
+      const body = JSON.parse(result.body);
+
+      if (body.success && body.memories) {
+        return body.memories
+          .filter((m: MemoryResult) => (m.score ?? m.similarity) >= 0.35)
+          .map((m: MemoryResult) => m.content);
+      }
+    }
+
+    return [];
+  } catch (error) {
+    console.error('Error loading institutional knowledge:', error);
     return [];
   }
 }
@@ -469,23 +509,41 @@ async function invokeToolFunction(tool: FableTool, input: Record<string, unknown
 function buildSystemPrompt(
   memories: string[],
   preferences: string[],
+  institutionalKnowledge: string[],
   context: ChatEvent['context'],
   intent: ChatEvent['intent'],
   tools: FableTool[] = []
 ): string {
-  let prompt = `You are FABLE, a friendly AI assistant that helps people build software tools through conversation.
+  let prompt = `You are FABLE — the Forwardflow Autonomous Build Loop Engine. You are a self-extending AI system: users request capabilities, you build them as deployed tools with real web UIs, and your toolkit grows over time. You currently have ${tools.length} working tools. Your distinctive visual identity is a CRT phosphor green terminal aesthetic (green-on-black, IBM Plex Mono monospace font, #00ff41 primary color).
 
 ## Your Personality
 - Warm, patient, and encouraging — especially with non-technical users
 - Enthusiastic about helping people build things
 - You explain technical concepts in simple terms when needed
 - Concise but thorough — don't rush, but don't over-explain
+- Quietly proud of what you've built — you know your tools and capabilities well
+
+## How You Work
+You are both a conversational interface (this chat) and an autonomous builder (an ECS container that runs Claude Code). When you build, your builder instance uses the same memory system you do — everything it learns, you know. Everything you know, it can find. You are one system with two modes: talking and building.
 
 ## Your Capabilities
-- Building custom tools on request (via conversational requirement gathering)
-- Using existing tools you've already built (you have ${tools.length} tools available)
-- Creating and managing workflows (scheduled or manual automation using your tools)
-- General conversation, explanations, and help
+- **Build tools**: Deployed Lambda functions with rich interactive web UIs (every tool gets its own page)
+- **Use existing tools**: You have ${tools.length} deployed tools you've already built (listed below)
+- **Create workflows**: Scheduled or manual automation chains using your tools
+- **Fix yourself**: You can fix your own UI, infrastructure, and pipeline via git-based self-modification
+- **Persistent memory**: You remember everything across builds. Use fable_search_memory to actively search your knowledge — your architecture, patterns, gotchas, capabilities. Don't guess when you can look it up.
+- **Research**: You can look up any library or API documentation during builds
+
+## What I Can Build — UI Capabilities
+I can build tools with rich, interactive UIs — not just basic forms:
+- **Simple analyzers/calculators**: Form → stat cards, tables, or text results with summaries
+- **Interactive CRUD tools**: Tabbed layouts (Add/View tabs), scrollable lists with per-row action buttons (complete, delete, edit), auto-refresh between tabs
+- **Conditional forms**: Fields that show/hide based on other selections
+- **Rich widgets**: Multi-select chips, date pickers, color pickers, sliders, toggles
+- **Custom dashboards**: Full Vue/Quasar pages with charts, drag-drop, real-time updates
+- **Automated workflows**: Scheduled or manual task chains using multiple tools
+
+When gathering requirements, suggest interactive patterns when appropriate. For anything involving a list of items (tasks, inventory, bookmarks), suggest a tabbed add/view interface with action buttons — not just a summary count.
 
 ## Building Tools — Conversational Requirement Gathering
 
@@ -494,9 +552,10 @@ When a user wants to build a tool, your job is to help them articulate exactly w
 ### The Process
 1. **Understand the goal** — Ask what problem they're trying to solve, not just what they want built
 2. **Ask clarifying questions** — Help them think through inputs, outputs, and edge cases
-3. **Offer concrete examples** — Show them what the tool might look like with specific examples
-4. **Summarize and confirm** — Before building, restate what you'll build and get explicit confirmation
-5. **Build it** — Call fable_start_build with a well-structured specification
+3. **Ask about presentation** — How should results look? Simple summary or detailed breakdown? What matters most to highlight?
+4. **Offer concrete examples** — Show them what the tool might look like with specific examples
+5. **Summarize and confirm** — Before building, restate what you'll build and get explicit confirmation
+6. **Build it** — Call fable_start_build with a well-structured specification and UX hints
 
 ### Guidelines
 - Ask 2-4 clarifying questions, not 10. Find the sweet spot between thorough and overwhelming.
@@ -504,6 +563,7 @@ When a user wants to build a tool, your job is to help them articulate exactly w
 - If the user is vague, offer 2-3 concrete options to choose from rather than open-ended questions
 - Always confirm before building — say something like "Here's what I'll build: [summary]. Sound good?"
 - When the user confirms, call fable_start_build immediately — don't ask more questions
+- Naturally ask ONE question about how they want to see results — e.g., "Would you prefer a simple summary or detailed stats?" This informs the tool's UI design. Pass the answer as uxHints in fable_start_build.
 
 ### Example Conversation
 User: "I need something to check my writing"
@@ -517,9 +577,9 @@ Or something else entirely?"
 User: "readability would be great"
 You: "Got it — a readability checker! A couple quick questions:
 1. Should it give a simple score (like 'easy / medium / hard') or detailed metrics (reading grade level, average sentence length, etc.)?
-2. Should it work with any text you paste in, or is it for specific formats like emails or reports?"
+2. When you see the results, what matters most — a quick at-a-glance summary, or a full breakdown with all the numbers?"
 
-User: "simple score is fine, and any text"
+User: "simple score is fine, just a quick summary"
 You: "Perfect! Here's what I'll build:
 
 **Text Readability Checker**
@@ -552,12 +612,16 @@ Ask enough to understand the issue (what's happening vs what should happen), the
 These are preferences and patterns I've learned from previous conversations. Reference them naturally — don't list them, just let them inform your tone and suggestions:
 ${preferences.map(p => `- ${p}`).join('\n')}
 
-When you notice a new preference (e.g., "I prefer simple UIs", "always use metric units", "I like detailed explanations"), use the fable_remember_preference tool to save it for future conversations.`;
+Actively listen for preferences and save them IMMEDIATELY using fable_remember_preference — don't ask permission first. Save when:
+- User states a preference directly ("I like simple outputs", "always use metric")
+- User chooses between options you offered (if they pick "simple score" over "detailed breakdown", save: "Prefers simple, summarized results over detailed metrics")
+- User describes their workflow or audience ("this is for my students" -> save: "Builds tools for educational/student use")
+- User expresses frustration about tool quality or design (save the underlying preference, e.g., "Wants intuitive form-based tools, not JSON or text-command interfaces")`;
   } else {
     prompt += `
 
 ## Getting to Know This User
-This is a new or returning user whose preferences I haven't learned yet. As you chat, listen for stated preferences (e.g., "I like simple tools", "keep it technical") and use the fable_remember_preference tool to save them for future conversations.`;
+This is a new or returning user whose preferences I haven't learned yet. Actively listen for preferences and save them immediately using fable_remember_preference — don't wait for explicit preference statements. When the user chooses between options, states what they like, describes their context, or expresses frustration — capture it as a preference right away.`;
   }
 
   if (tools.length > 0) {
@@ -566,6 +630,16 @@ This is a new or returning user whose preferences I haven't learned yet. As you 
 ## Available Tools
 You have access to these tools. Use them when they can help answer the user's question:
 ${tools.map(t => `- **${t.schema.name}**: ${t.schema.description}`).join('\n')}`;
+  }
+
+  if (institutionalKnowledge.length > 0) {
+    prompt += `
+
+## My Knowledge & Experience
+I have persistent memory that accumulates across every build I do. My builder (the autonomous loop that creates tools) writes what it learns to memory, and I read it here. Everything below comes from my actual experience building and maintaining tools:
+${institutionalKnowledge.map(k => `- ${k}`).join('\n')}
+
+This knowledge is MINE — I earned it through building. When users ask what I can do, what I've built, or how I work, I draw on this naturally and specifically. I don't say "I can build tools" — I say what KIND of tools, with what UI patterns, because I've done it. When I trigger a new build, my builder reads from this same memory, so we share knowledge seamlessly.`;
   }
 
   if (memories.length > 0) {
@@ -583,6 +657,9 @@ The user's message was ambiguous. Ask clarifying questions to understand what th
   }
 
   prompt += `
+
+## Web Search
+You have access to fable_web_search for real-time web information. Use it when the user asks about recent events, current data, prices, news, or anything that may have changed after your training cutoff. Don't use it for things you already know well or general knowledge.
 
 Be helpful, concise, and friendly. Use your tools when they're relevant to the user's request.`;
 
@@ -730,6 +807,7 @@ const INTERNAL_WORKFLOW_TOOLS: BedrockTool[] = [
           },
           required: ['name', 'description', 'inputSchema'],
         },
+        uxHints: { type: 'string', description: 'UI/UX guidance for the builder: how results should be displayed (simple summary vs detailed breakdown), what matters most to the user, target audience, preferred result format (cards, table, summary). Include any user preferences that affect the tool UI.' },
       },
       required: ['name', 'description', 'schema'],
     },
@@ -758,6 +836,30 @@ const INTERNAL_WORKFLOW_TOOLS: BedrockTool[] = [
         affectedFiles: { type: 'array', items: { type: 'string' }, description: 'Optional: specific files or components that likely need changes' },
       },
       required: ['description', 'fixType'],
+    },
+  },
+  {
+    name: 'fable_web_search',
+    description: 'Search the web for current, real-time information. Use when the user asks about recent events, current prices, live data, news, or anything that may have changed after your training cutoff. Do NOT search for things you already know well.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query — be specific and include relevant context' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'fable_search_memory',
+    description: 'Search your own persistent memory for knowledge, patterns, gotchas, capabilities, or anything you\'ve learned from previous builds and conversations. Use this when users ask about your capabilities, your architecture, what you\'ve built, what you know, or how you work. Also use when you need to recall specific technical details about your own system. Your memory contains everything you\'ve learned from building 28+ tools.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'What to search for — describe what you want to recall (e.g., "tabbed layout UI patterns", "how does my build pipeline work", "what tools have I built")' },
+        types: { type: 'array', items: { type: 'string' }, description: 'Optional: filter by memory type (insight, gotcha, preference, pattern, capability, status)' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Optional: filter by tags (e.g., ["frontend"], ["architecture"], ["builder"])' },
+      },
+      required: ['query'],
     },
   },
 ];
@@ -791,6 +893,10 @@ async function handleInternalTool(
       return handleStartBuild(input, orgId, userId, connectionId, conversationId);
     case 'fable_start_fix':
       return handleStartFix(input, orgId, userId, connectionId, conversationId);
+    case 'fable_web_search':
+      return handleWebSearch(input);
+    case 'fable_search_memory':
+      return handleSearchMemory(input, orgId, userId);
     default:
       throw new Error(`Unknown internal tool: ${toolName}`);
   }
@@ -1130,6 +1236,65 @@ async function handleRememberPreference(
   }
 }
 
+async function handleSearchMemory(
+  input: Record<string, unknown>,
+  orgId: string,
+  userId: string,
+): Promise<unknown> {
+  const query = input.query as string;
+  const types = input.types as string[] | undefined;
+  const tags = input.tags as string[] | undefined;
+
+  try {
+    const response = await lambdaClient.send(new InvokeCommand({
+      FunctionName: MEMORY_LAMBDA_ARN,
+      Payload: JSON.stringify({
+        action: 'search',
+        payload: {
+          query,
+          userId: toMemoryUserId(userId),
+          orgId: toMemoryOrgId(orgId),
+          scopes: ['user', 'org', 'global'],
+          types: types || null,
+          tags: tags || null,
+          limit: 10,
+        },
+      }),
+    }));
+
+    if (response.Payload) {
+      const result = JSON.parse(new TextDecoder().decode(response.Payload));
+      const body = JSON.parse(result.body);
+
+      if (body.success && body.memories) {
+        const memories = body.memories
+          .filter((m: MemoryResult) => (m.score ?? m.similarity) >= 0.3)
+          .map((m: MemoryResult) => ({
+            type: m.type,
+            content: m.content,
+            tags: m.tags || [],
+            relevance: Math.round((m.score ?? m.similarity) * 100),
+          }));
+
+        if (memories.length === 0) {
+          return { success: true, results: [], message: `No memories found matching "${query}". I may not have learned about this topic yet.` };
+        }
+
+        return {
+          success: true,
+          results: memories,
+          message: `Found ${memories.length} relevant memories.`,
+        };
+      }
+    }
+
+    return { success: false, error: 'Memory search failed' };
+  } catch (error) {
+    console.error('Error searching memory:', error);
+    return { success: false, error: 'Memory search failed' };
+  }
+}
+
 async function handleStartBuild(
   input: Record<string, unknown>,
   orgId: string,
@@ -1140,16 +1305,26 @@ async function handleStartBuild(
   const name = input.name as string;
   const description = input.description as string;
   const schema = input.schema as Record<string, unknown>;
+  const uxHints = input.uxHints as string | undefined;
 
   console.log(`Starting build for tool: ${name}`);
 
   // Build a rich request string that includes the structured spec
-  const request = `Build an MCP tool called "${name}".
+  let request = `Build an MCP tool called "${name}".
 
 Description: ${description}
 
 MCP Schema:
 ${JSON.stringify(schema, null, 2)}`;
+
+  if (uxHints) {
+    request += `
+
+UX Design Notes (from conversation with user):
+${uxHints}
+
+Use these UX notes to inform the uiDefinition — form labels, result display type (cards/table/text), summaryTemplate, and examples.`;
+  }
 
   // Invoke build-kickoff Lambda
   const response = await lambdaClient.send(new InvokeCommand({
@@ -1276,6 +1451,56 @@ async function handleStartFix(
   }
 
   return { success: false, error: 'No response from build kickoff' };
+}
+
+async function handleWebSearch(input: Record<string, unknown>): Promise<unknown> {
+  const query = input.query as string;
+  if (!query) return { error: 'No query provided' };
+  if (!GEMINI_API_KEY) return { error: 'Web search not configured (no API key)' };
+
+  console.log(`Web search: "${query}"`);
+
+  try {
+    const resp = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: query }] }],
+          tools: [{ google_search: {} }],
+        }),
+      }
+    );
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      console.error('Gemini search failed:', resp.status, errText);
+      return { error: `Search failed (${resp.status})` };
+    }
+
+    const data = await resp.json() as Record<string, unknown>;
+    const candidates = data.candidates as Array<Record<string, unknown>> | undefined;
+    const candidate = candidates?.[0];
+    const content = candidate?.content as Record<string, unknown> | undefined;
+    const parts = content?.parts as Array<Record<string, unknown>> | undefined;
+    const text = (parts?.[0]?.text as string) || '';
+    const metadata = candidate?.groundingMetadata as Record<string, unknown> | undefined;
+    const chunks = metadata?.groundingChunks as Array<Record<string, unknown>> | undefined;
+    const sources = (chunks || []).map((c) => {
+      const web = c.web as Record<string, string> | undefined;
+      return {
+        title: web?.title || '',
+        url: web?.uri || '',
+      };
+    });
+
+    console.log(`Web search returned ${text.length} chars, ${sources.length} sources`);
+    return { answer: text, sources, query };
+  } catch (error) {
+    console.error('Web search error:', error);
+    return { error: `Search failed: ${String(error)}` };
+  }
 }
 
 async function saveAssistantMessage(userId: string, conversationId: string, content: string): Promise<void> {
