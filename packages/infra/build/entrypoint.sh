@@ -4,6 +4,68 @@ set -e
 # FABLE Build Entrypoint
 # Executes Claude Code with the appropriate template for each phase
 
+# --- Real-time progress reporting ---
+send_progress() {
+    local phase="$1"
+    local message="$2"
+    local progress="${3:-}"
+    local iteration="${4:-}"
+    local max_iterations="${5:-}"
+
+    echo "[PROGRESS] $phase: $message"
+
+    if [ -z "${BUILD_PROGRESS_LAMBDA_NAME:-}" ] || [ -z "${FABLE_BUILD_ID:-}" ]; then
+        return
+    fi
+
+    local payload
+    payload=$(python3 -c "
+import json, sys
+d = {
+    'buildId': '${FABLE_BUILD_ID}',
+    'orgId': '${FABLE_ORG_ID:-00000000-0000-0000-0000-000000000001}',
+    'userId': '${FABLE_USER_ID:-unknown}',
+    'phase': '$phase',
+    'message': '$message'
+}
+if '$progress': d['progress'] = int('$progress')
+if '$iteration': d['iteration'] = int('$iteration')
+if '$max_iterations': d['maxIterations'] = int('$max_iterations')
+print(json.dumps(d))
+")
+
+    aws lambda invoke --function-name "$BUILD_PROGRESS_LAMBDA_NAME" \
+        --cli-binary-format raw-in-base64-out \
+        --payload "$payload" /tmp/progress-response.json > /dev/null 2>&1 || true
+}
+
+HEARTBEAT_PID=""
+
+start_heartbeat() {
+    local iteration="${1:-}"
+    local max_iterations="${2:-}"
+    local parent_pid=$$
+    (
+        local count=0
+        while kill -0 $parent_pid 2>/dev/null; do
+            sleep 30
+            count=$((count + 1))
+            local mins=$((count / 2))
+            local secs=$((count % 2 * 30))
+            send_progress "building" "Claude Code working... (${mins}m${secs}s)" "" "$iteration" "$max_iterations"
+        done
+    ) &
+    HEARTBEAT_PID=$!
+}
+
+stop_heartbeat() {
+    if [ -n "${HEARTBEAT_PID:-}" ]; then
+        kill $HEARTBEAT_PID 2>/dev/null || true
+        wait $HEARTBEAT_PID 2>/dev/null || true
+        HEARTBEAT_PID=""
+    fi
+}
+
 echo "=== FABLE Build Container Starting ==="
 echo "Phase: ${FABLE_PHASE:-core}"
 echo "Work dir: ${FABLE_WORK_DIR:-/fable/work}"
@@ -68,6 +130,7 @@ setup_github_auth() {
 
 # Setup GitHub auth (if credentials available)
 setup_github_auth
+send_progress "initializing" "GitHub authentication complete" 10
 
 # Setup MCP memory server configuration and hooks
 setup_mcp_config() {
@@ -100,6 +163,10 @@ setup_mcp_config() {
         "FABLE_BUILD_ID": "${FABLE_BUILD_ID:-unknown}",
         "FABLE_ORG_ID": "${FABLE_ORG_ID:-00000000-0000-0000-0000-000000000001}"
       }
+    },
+    "context7": {
+      "command": "context7-mcp",
+      "args": []
     }
   }
 }
@@ -173,6 +240,7 @@ copy_mcp_config_to_workdir() {
 # Setup MCP config (if memory Lambda URL available)
 # Now using stdio sidecar instead of HTTP transport (HTTP caused hangs)
 setup_mcp_config
+send_progress "initializing" "Build environment configured" 20
 
 # Validate required inputs
 if [ -z "$BUILD_SPEC" ]; then
@@ -212,6 +280,7 @@ if [ -n "$ARTIFACTS_BUCKET" ] && [ -n "$STAGE" ]; then
     aws s3 sync "s3://${ARTIFACTS_BUCKET}/templates/skills/" \
         /fable/templates/skills/ 2>/dev/null \
         || echo "No S3 skills found, using baked-in versions"
+    send_progress "initializing" "Templates and skills loaded" 30
 fi
 
 # Copy the CLAUDE.md template
@@ -261,6 +330,8 @@ check_timeout() {
     local elapsed=$(( $(date +%s) - BUILD_START ))
     if [ $elapsed -ge $BUILD_TIMEOUT ]; then
         echo "=== BUILD TIMEOUT: ${elapsed}s elapsed (limit: ${BUILD_TIMEOUT}s) ==="
+        stop_heartbeat
+        send_progress "timeout" "Build timed out after ${elapsed}s" "" "" ""
         echo "{\"status\":\"error\",\"error\":\"Build timed out after ${elapsed}s\"}" > ./output.json
         if [ -n "$ARTIFACTS_BUCKET" ] && [ -n "$FABLE_BUILD_ID" ]; then
             S3_KEY="builds/${FABLE_BUILD_ID}/${PHASE}-output.json"
@@ -289,6 +360,9 @@ while [ $ITER -le $MAX_ITERATIONS ]; do
     echo "Running Claude with prompt: $PROMPT"
     echo ""
 
+    send_progress "building" "Starting Claude Code (iteration $ITER/$MAX_ITERATIONS)" 40 "$ITER" "$MAX_ITERATIONS"
+    start_heartbeat "$ITER" "$MAX_ITERATIONS"
+
     # Run Claude Code with timeout
     # Note: `claude -p` buffers all output until completion (not a TTY).
     timeout "${BUILD_TIMEOUT}s" claude -p "$PROMPT" --dangerously-skip-permissions 2>&1 || {
@@ -296,18 +370,23 @@ while [ $ITER -le $MAX_ITERATIONS ]; do
         echo "Claude exited with code: $EXIT_CODE"
     }
 
+    stop_heartbeat
+
     # Check if output.json exists and has status=success
     if [ -f ./output.json ]; then
         STATUS=$(jq -r '.status // "unknown"' ./output.json 2>/dev/null || echo "unknown")
         if [ "$STATUS" = "success" ]; then
             echo "=== Build succeeded on iteration $ITER ==="
+            send_progress "iteration_complete" "Build succeeded on iteration $ITER" 80 "$ITER" "$MAX_ITERATIONS"
             break
         fi
         echo "=== Build reported status: $STATUS on iteration $ITER ==="
+        send_progress "iteration_failed" "Iteration $ITER: $STATUS — retrying" "" "$ITER" "$MAX_ITERATIONS"
         # Save failure context for next iteration
         cp ./output.json ./previous-attempt.json
     else
         echo "=== No output.json produced on iteration $ITER ==="
+        send_progress "iteration_failed" "Iteration $ITER: no output produced — retrying" "" "$ITER" "$MAX_ITERATIONS"
         echo "{\"failedIteration\":$ITER,\"failureReason\":\"No output.json produced\"}" > ./previous-attempt.json
     fi
 
@@ -329,6 +408,7 @@ if [ -f ./output.json ]; then
 
     # Upload output to S3 for build-completion Lambda to retrieve
     if [ -n "$ARTIFACTS_BUCKET" ] && [ -n "$FABLE_BUILD_ID" ]; then
+        send_progress "uploading" "Uploading build artifacts" 90
         S3_KEY="builds/${FABLE_BUILD_ID}/${PHASE}-output.json"
         echo ""
         echo "=== Uploading output to S3 ==="
@@ -354,6 +434,8 @@ else
         aws s3 cp ./output.json "s3://${ARTIFACTS_BUCKET}/${S3_KEY}"
     fi
 fi
+
+send_progress "complete" "Build container finished" 100
 
 # Cleanup credentials
 rm -f ~/.git-credentials 2>/dev/null || true

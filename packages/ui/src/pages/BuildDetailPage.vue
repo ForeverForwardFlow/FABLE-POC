@@ -38,6 +38,36 @@
         </div>
       </div>
 
+      <!-- Live Progress (for in-progress builds) -->
+      <div v-if="progressLog.length" class="build-detail__section">
+        <h2 class="build-detail__section-title">
+          <q-icon name="sync" color="positive" size="20px" class="build-detail__spin" /> Live Progress
+        </h2>
+        <q-linear-progress
+          v-if="latestProgress?.progress"
+          :value="(latestProgress.progress || 0) / 100"
+          color="positive"
+          track-color="grey-9"
+          rounded
+          size="8px"
+          class="build-detail__progress-bar"
+        />
+        <div v-if="latestProgress" class="build-detail__progress-phase">
+          <span class="build-detail__phase-name">{{ latestProgress.phase }}</span>
+          <span v-if="latestProgress.iteration" class="build-detail__phase-iter">
+            Iteration {{ latestProgress.iteration }}<span v-if="latestProgress.maxIterations">/{{ latestProgress.maxIterations }}</span>
+          </span>
+          <span class="build-detail__phase-msg">{{ latestProgress.message }}</span>
+        </div>
+        <div class="build-detail__progress-log">
+          <div v-for="(entry, i) in progressLog" :key="i" class="build-detail__log-entry">
+            <span class="build-detail__log-time">{{ formatTime(entry.timestamp) }}</span>
+            <span class="build-detail__log-phase">{{ entry.phase }}</span>
+            <span class="build-detail__log-msg">{{ entry.message }}</span>
+          </div>
+        </div>
+      </div>
+
       <!-- Deployed Tools -->
       <div v-if="build.deployedTools.length" class="build-detail__section">
         <h2 class="build-detail__section-title">
@@ -196,7 +226,7 @@
 import { onMounted, onUnmounted, computed, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import type { WsIncomingMessage } from 'src/types';
-import { useBuildsStore } from 'src/stores/builds-store';
+import { useBuildsStore, type BuildProgressEntry } from 'src/stores/builds-store';
 import { fableWs } from 'src/boot/websocket';
 
 const route = useRoute();
@@ -204,6 +234,9 @@ const router = useRouter();
 const buildsStore = useBuildsStore();
 
 const build = computed(() => buildsStore.currentBuild);
+const buildId = computed(() => route.params.buildId as string);
+const progressLog = computed<BuildProgressEntry[]>(() => buildsStore.buildProgress[buildId.value] || []);
+const latestProgress = computed(() => buildsStore.getLatestProgress(buildId.value));
 
 let unsubscribe: (() => void) | null = null;
 let unwatchConnected: (() => void) | null = null;
@@ -217,6 +250,12 @@ function scoreClass(score: number) {
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+function formatTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString(undefined, {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
   });
 }
 
@@ -241,8 +280,11 @@ onMounted(() => {
     if (msg.type === 'build_detail') {
       buildsStore.handleBuildDetail(msg.payload.build);
     }
+    if (msg.type === 'build_progress' && msg.payload.buildId === buildId.value) {
+      buildsStore.handleBuildProgress(msg.payload);
+    }
     if (msg.type === 'error' && buildsStore.detailLoading) {
-      buildsStore.handleError(msg.message || 'Failed to load build');
+      buildsStore.handleError((msg as unknown as { message: string }).message || 'Failed to load build');
     }
   });
 
@@ -546,5 +588,73 @@ watch(() => route.params.buildId, () => {
     color: var(--ff-text-secondary);
     padding: 4px 0;
   }
+
+  &__spin {
+    animation: spin 2s linear infinite;
+  }
+
+  &__progress-bar {
+    margin-bottom: 12px;
+  }
+
+  &__progress-phase {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+    font-size: 14px;
+  }
+
+  &__phase-name {
+    font-weight: 600;
+    color: #4ade80;
+    text-transform: uppercase;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+  }
+
+  &__phase-iter {
+    font-size: 12px;
+    color: var(--ff-text-muted);
+  }
+
+  &__phase-msg {
+    color: var(--ff-text-secondary);
+  }
+
+  &__progress-log {
+    max-height: 200px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column-reverse;
+  }
+
+  &__log-entry {
+    display: flex;
+    gap: 8px;
+    padding: 3px 0;
+    font-size: 12px;
+    font-family: monospace;
+  }
+
+  &__log-time {
+    color: var(--ff-text-muted);
+    flex-shrink: 0;
+  }
+
+  &__log-phase {
+    color: #4ade80;
+    flex-shrink: 0;
+    min-width: 100px;
+  }
+
+  &__log-msg {
+    color: var(--ff-text-secondary);
+  }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 </style>

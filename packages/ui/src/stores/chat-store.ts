@@ -154,6 +154,18 @@ export const useChatStore = defineStore('chat', {
         case 'build_started': {
           this.isBuilding = true;
           this.currentBuildId = msg.payload.buildId;
+          this.messages.push({
+            id: crypto.randomUUID(),
+            role: 'fable',
+            content: `Building ${msg.payload.toolName}...`,
+            timestamp: new Date().toISOString(),
+            metadata: {
+              status: 'building',
+              progress: 0,
+              checkmarks: ['Build started'],
+              buildId: msg.payload.buildId,
+            },
+          });
           this.addLog({
             id: crypto.randomUUID(),
             timestamp: new Date().toISOString(),
@@ -213,6 +225,25 @@ export const useChatStore = defineStore('chat', {
               level: 'info',
               message: `Build completed: ${toolNames}`,
             });
+          }
+          break;
+        }
+
+        case 'build_progress': {
+          if (msg.payload.buildId === this.currentBuildId) {
+            // Update the last "building" message with current progress
+            const buildMsg = [...this.messages].reverse().find(
+              m => m.role === 'fable' && m.metadata?.status === 'building'
+            );
+            if (buildMsg) {
+              buildMsg.metadata = {
+                ...buildMsg.metadata,
+                status: 'building',
+                progress: msg.payload.progress || buildMsg.metadata?.progress,
+                checkmarks: [msg.payload.message],
+              };
+              buildMsg.content = msg.payload.message;
+            }
           }
           break;
         }

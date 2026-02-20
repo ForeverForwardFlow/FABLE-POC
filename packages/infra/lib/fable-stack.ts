@@ -1326,6 +1326,35 @@ export class FableStack extends cdk.Stack {
     memoryFn.grantInvoke(buildCompletionFn);
     buildCompletionFn.addEnvironment('MEMORY_LAMBDA_ARN', memoryFn.functionArn);
 
+    // Build Progress Lambda (invoked by ECS builder for real-time progress streaming)
+    const buildProgressFn = new lambdaNodejs.NodejsFunction(this, 'BuildProgressFn', {
+      functionName: `fable-${stage}-build-progress`,
+      entry: path.join(__dirname, '../lambda/build-progress/index.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      environment: {
+        CONNECTIONS_TABLE: this.connectionsTable.tableName,
+        BUILDS_TABLE: this.buildsTable.tableName,
+        // WEBSOCKET_ENDPOINT added after WebSocket API is created below
+        STAGE: stage,
+      },
+      timeout: cdk.Duration.seconds(10),
+      memorySize: 256,
+      logRetention: logs.RetentionDays.ONE_WEEK,
+      bundling: {
+        minify: true,
+        sourceMap: true,
+        target: 'node20',
+        format: lambdaNodejs.OutputFormat.CJS,
+      },
+    });
+
+    // Build Progress Lambda permissions
+    this.connectionsTable.grantReadData(buildProgressFn);
+    this.buildsTable.grantReadWriteData(buildProgressFn);
+    buildProgressFn.grantInvoke(buildTaskRole);
+    buildContainer.addEnvironment('BUILD_PROGRESS_LAMBDA_NAME', buildProgressFn.functionName);
+
     // EventBridge rule: ECS task stopped → completion Lambda
     new events.Rule(this, 'BuildTaskCompletionRule', {
       ruleName: `fable-${stage}-build-completion`,
@@ -1459,6 +1488,7 @@ export class FableStack extends cdk.Stack {
     chatFn.addToRolePolicy(webSocketManagePolicy);
     workflowExecutorFn.addToRolePolicy(webSocketManagePolicy);
     buildCompletionFn.addToRolePolicy(webSocketManagePolicy);
+    buildProgressFn.addToRolePolicy(webSocketManagePolicy);
 
     // Add WebSocket API endpoint to Lambda environment
     const wsEndpoint = `${this.webSocketApi.apiId}.execute-api.${this.region}.amazonaws.com/${stage}`;
@@ -1468,6 +1498,7 @@ export class FableStack extends cdk.Stack {
     chatFn.addEnvironment('WEBSOCKET_ENDPOINT', wsEndpoint);
     workflowExecutorFn.addEnvironment('WEBSOCKET_ENDPOINT', wsEndpoint);
     buildCompletionFn.addEnvironment('WEBSOCKET_ENDPOINT', wsEndpoint);
+    buildProgressFn.addEnvironment('WEBSOCKET_ENDPOINT', wsEndpoint);
     buildCompletionFn.addEnvironment('BUILD_KICKOFF_ARN', buildKickoffFn.functionArn);
     buildCompletionFn.addEnvironment('MAX_BUILD_CYCLES', '5');
     buildCompletionFn.addEnvironment('WORKFLOWS_TABLE', this.workflowsTable.tableName);

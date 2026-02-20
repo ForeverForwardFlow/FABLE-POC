@@ -30,6 +30,7 @@ export interface ChatMessage {
     actions?: Action[];
     toolUses?: ToolUse[];
     isStreaming?: boolean;
+    buildId?: string;
   };
 }
 
@@ -283,6 +284,17 @@ export interface WsOutgoingMessage {
   };
 }
 
+// Build progress (real-time streaming from ECS builder)
+export interface BuildProgressPayload {
+  buildId: string;
+  phase: string;
+  message: string;
+  progress?: number;
+  iteration?: number;
+  maxIterations?: number;
+  timestamp: string;
+}
+
 // WebSocket message types (incoming from server)
 export type WsIncomingMessage =
   | { type: 'chat_chunk'; payload: { messageId: string; content: string } }
@@ -292,6 +304,7 @@ export type WsIncomingMessage =
   | { type: 'build_completed'; payload: { buildId: string; tools: Array<{ toolName: string; functionUrl: string; schema: unknown }> } }
   | { type: 'build_failed'; payload: { buildId: string; error: string } }
   | { type: 'build_needs_help'; payload: { buildId: string; message: string } }
+  | { type: 'build_progress'; payload: BuildProgressPayload }
   | { type: 'tool_use'; payload: { toolName: string; toolId: string; messageId: string; input?: Record<string, unknown> } }
   | { type: 'tool_result'; payload: { toolId: string; result: unknown; messageId: string } }
   | { type: 'tool_approval_request'; payload: { toolName: string; toolId: string; messageId: string; input?: Record<string, unknown>; description?: string } }

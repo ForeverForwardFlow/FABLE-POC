@@ -1,6 +1,15 @@
 import { defineStore } from 'pinia';
-import type { BuildRecord, BuildDetailRecord } from 'src/types';
+import type { BuildRecord, BuildDetailRecord, BuildProgressPayload } from 'src/types';
 import { fableWs } from 'src/boot/websocket';
+
+export interface BuildProgressEntry {
+  phase: string;
+  message: string;
+  progress?: number;
+  iteration?: number;
+  maxIterations?: number;
+  timestamp: string;
+}
 
 interface BuildsState {
   builds: BuildRecord[];
@@ -10,6 +19,7 @@ interface BuildsState {
   error: string | null;
   statusFilter: string | null;
   searchQuery: string;
+  buildProgress: Record<string, BuildProgressEntry[]>;
 }
 
 export const useBuildsStore = defineStore('builds', {
@@ -21,6 +31,7 @@ export const useBuildsStore = defineStore('builds', {
     error: null,
     statusFilter: null,
     searchQuery: '',
+    buildProgress: {},
   }),
 
   getters: {
@@ -93,6 +104,30 @@ export const useBuildsStore = defineStore('builds', {
 
     setSearchQuery(query: string) {
       this.searchQuery = query;
+    },
+
+    handleBuildProgress(payload: BuildProgressPayload) {
+      const entry: BuildProgressEntry = {
+        phase: payload.phase,
+        message: payload.message,
+        progress: payload.progress,
+        iteration: payload.iteration,
+        maxIterations: payload.maxIterations,
+        timestamp: payload.timestamp,
+      };
+      if (!this.buildProgress[payload.buildId]) {
+        this.buildProgress[payload.buildId] = [];
+      }
+      this.buildProgress[payload.buildId].push(entry);
+    },
+
+    getLatestProgress(buildId: string): BuildProgressEntry | null {
+      const log = this.buildProgress[buildId];
+      return log?.length ? log[log.length - 1] : null;
+    },
+
+    clearBuildProgress(buildId: string) {
+      delete this.buildProgress[buildId];
     },
   },
 });
