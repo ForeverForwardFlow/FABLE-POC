@@ -19,20 +19,20 @@ send_progress() {
     fi
 
     local payload
-    payload=$(python3 -c "
-import json, sys
-d = {
-    'buildId': '${FABLE_BUILD_ID}',
-    'orgId': '${FABLE_ORG_ID:-00000000-0000-0000-0000-000000000001}',
-    'userId': '${FABLE_USER_ID:-unknown}',
-    'phase': '$phase',
-    'message': '$message'
-}
-if '$progress': d['progress'] = int('$progress')
-if '$iteration': d['iteration'] = int('$iteration')
-if '$max_iterations': d['maxIterations'] = int('$max_iterations')
-print(json.dumps(d))
-")
+    payload=$(jq -n \
+        --arg buildId "${FABLE_BUILD_ID}" \
+        --arg orgId "${FABLE_ORG_ID:-00000000-0000-0000-0000-000000000001}" \
+        --arg userId "${FABLE_USER_ID:-unknown}" \
+        --arg phase "$phase" \
+        --arg message "$message" \
+        --arg progress "$progress" \
+        --arg iteration "$iteration" \
+        --arg max_iterations "$max_iterations" \
+        '{buildId: $buildId, orgId: $orgId, userId: $userId, phase: $phase, message: $message}
+         + (if $progress != "" then {progress: ($progress | tonumber)} else {} end)
+         + (if $iteration != "" then {iteration: ($iteration | tonumber)} else {} end)
+         + (if $max_iterations != "" then {maxIterations: ($max_iterations | tonumber)} else {} end)'
+    )
 
     aws lambda invoke --function-name "$BUILD_PROGRESS_LAMBDA_NAME" \
         --cli-binary-format raw-in-base64-out \
